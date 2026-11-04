@@ -14,6 +14,7 @@ typedef struct {
     char listen[128];
     char token[256];
     SessionPool *sessions;
+    struct PreviewPool *previews;
     pthread_mutex_t artifact_mutex;
 } App;
 int service_start(App *app, int workers, char *error, size_t cap);

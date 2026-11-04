@@ -1,5 +1,7 @@
 #include "web.h"
 #include "engine/workflow.h"
+#include "engine/preview.h"
+#include "common/redact.h"
 #include "rule/rule.h"
 #include <civetweb.h>
 #include <errno.h>
@@ -117,8 +119,7 @@ static bool csv_fields_valid(json_object *fields)
         if (!field || !json_object_is_type(field, json_type_object))
             return false;
         json_object *name = jg(field, "name");
-        if (!name || !json_object_is_type(name, json_type_string) ||
-            !*json_object_get_string(name))
+        if (!name || !json_object_is_type(name, json_type_string) || !*json_object_get_string(name))
             return false;
     }
     return true;
@@ -152,15 +153,18 @@ static int export_run(struct mg_connection *c, App *app, int64_t id, bool csv)
     if (csv && ji(snapshot, "schema_version", 1) == 2 && !explicit_fields) {
         derived_fields = json_object_new_array();
         sqlite3_stmt *columns = NULL;
-        int cr = sqlite3_prepare_v2(app->store.db,
-            "SELECT DISTINCT json_each.key FROM items,json_each(items.data) "
-            "WHERE items.run_id=? ORDER BY json_each.key", -1, &columns, NULL);
+        int cr =
+            sqlite3_prepare_v2(app->store.db,
+                               "SELECT DISTINCT json_each.key FROM items,json_each(items.data) "
+                               "WHERE items.run_id=? ORDER BY json_each.key",
+                               -1, &columns, NULL);
         if (cr == SQLITE_OK) {
             sqlite3_bind_int64(columns, 1, id);
             while ((cr = sqlite3_step(columns)) == SQLITE_ROW) {
                 json_object *field = json_object_new_object();
-                json_object_object_add(field, "name", json_object_new_string(
-                    (const char *)sqlite3_column_text(columns, 0)));
+                json_object_object_add(
+                    field, "name",
+                    json_object_new_string((const char *)sqlite3_column_text(columns, 0)));
                 json_object_array_add(derived_fields, field);
             }
         }
@@ -269,7 +273,20 @@ static int handler(struct mg_connection *c, void *context)
             json_object_object_add(j, "browser_available", json_object_new_boolean(false));
             return send_json(c, 200, j);
         }
-        if (!strcmp(path, "/api/preview") && post) {
+        if (post && !strcmp(path, "/api/preview/release")) {
+            json_object *payload = read_json(c, e, sizeof(e));
+            if (!payload)
+                return error_json(c, 400, e);
+            int rc =
+                preview_pool_release(app->previews, js(payload, "session_id", ""), e, sizeof(e));
+            json_object_put(payload);
+            if (rc)
+                return error_json(c, 404, e);
+            json_object *reply = json_object_new_object();
+            json_object_object_add(reply, "released", json_object_new_boolean(true));
+            return send_json(c, 200, reply);
+        }
+        if ((!strcmp(path, "/api/preview") || !strcmp(path, "/api/preview/step")) && post) {
             json_object *rule = read_json(c, e, sizeof(e));
             if (!rule)
                 return error_json(c, 400, e);
@@ -278,7 +295,14 @@ static int handler(struct mg_connection *c, void *context)
                 json_object_put(rule);
                 return error_json(c, 400, e);
             }
-            json_object *out = workflow_preview(app, rule, e, sizeof(e));
+            json_object *out = !strcmp(path, "/api/preview/step")
+                                   ? workflow_preview_step(app, rule, e, sizeof(e))
+                                   : workflow_preview(app, rule, e, sizeof(e));
+            if (out && !strcmp(path, "/api/preview")) {
+                json_object *safe = debug_redact(out, definition ? definition : rule);
+                json_object_put(out);
+                out = safe;
+            }
             json_object_put(rule);
             return out ? send_json(c, 200, out) : error_json(c, 422, e);
         }
@@ -369,7 +393,8 @@ static int handler(struct mg_connection *c, void *context)
                 return query_reply(c, app,
                                    "SELECT id,run_id,step_id,parent_id,branch_key,record_key,"
                                    "status,attempts,error,phase FROM step_instances "
-                                   "WHERE run_id=? ORDER BY id DESC LIMIT 1000", id);
+                                   "WHERE run_id=? ORDER BY id DESC LIMIT 1000",
+                                   id);
             if (!strncmp(tail, "/steps/", 7) && get) {
                 const char *start = tail + 7;
                 char *end;
@@ -380,10 +405,16 @@ static int handler(struct mg_connection *c, void *context)
                     snprintf(sql, sizeof(sql),
                              "SELECT id,run_id,step_id,parent_id,branch_key,record_key,"
                              "status,attempts,context,output,error,phase FROM step_instances "
-                             "WHERE run_id=? AND id=%" PRId64, instance);
+                             "WHERE run_id=? AND id=%" PRId64,
+                             instance);
                     json_object *j = one_row(app, sql, id);
-                    return j ? send_json(c, 200, j)
-                             : error_json(c, 404, "Step instance not found in this run");
+                    if (!j)
+                        return error_json(c, 404, "Step instance not found in this run");
+                    json_object *run = one_row(app, "SELECT snapshot FROM runs WHERE id=?", id);
+                    json_object *safe = debug_redact(j, jg(run, "snapshot"));
+                    json_object_put(run);
+                    json_object_put(j);
+                    return send_json(c, 200, safe);
                 }
                 return error_json(c, 404, "Step instance not found in this run");
             }

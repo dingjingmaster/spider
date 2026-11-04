@@ -2,6 +2,7 @@
 #include "scheduler/scheduler.h"
 #include "storage/workflow.h"
 #include "engine/workflow.h"
+#include "engine/preview.h"
 static void *worker(void *ctx)
 {
     App *app = ctx;
@@ -38,6 +39,13 @@ int service_start(App *app, int workers, char *e, size_t n)
         pthread_mutex_destroy(&app->artifact_mutex);
         return fail(e, n, "Cannot initialize session pool");
     }
+    app->previews = preview_pool_create();
+    if (!app->previews) {
+        session_pool_destroy(app->sessions);
+        app->sessions = NULL;
+        pthread_mutex_destroy(&app->artifact_mutex);
+        return fail(e, n, "Cannot initialize preview sessions");
+    }
     for (int i = 0; i < workers; i++) {
         if (pthread_create(&app->workers[i], NULL, worker, app)) {
             service_stop(app);
@@ -53,6 +61,8 @@ void service_stop(App *app)
     for (int i = 0; i < app->worker_count; i++)
         pthread_join(app->workers[i], NULL);
     app->worker_count = 0;
+    preview_pool_destroy(app->previews);
+    app->previews = NULL;
     session_pool_destroy(app->sessions);
     app->sessions = NULL;
     pthread_mutex_destroy(&app->artifact_mutex);

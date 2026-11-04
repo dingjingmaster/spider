@@ -1,5 +1,6 @@
 #include "workflow.h"
 #include "rule.h"
+#include "data.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -65,17 +66,60 @@ static int template_syntax(const char *s, char *e, size_t n)
     }
     return 0;
 }
+static int reference_syntax(json_object *v, char *e, size_t n)
+{
+    json_object *path = jg(v, "$ref");
+    if (!json_object_is_type(path, json_type_string))
+        return fail(e, n, "$ref must be a JSON Pointer string");
+    const char *p = json_object_get_string(path);
+    bool valid = (!strncmp(p, "/input", 6) && (!p[6] || p[6] == '/')) ||
+                 (!strncmp(p, "/steps", 6) && (!p[6] || p[6] == '/')) ||
+                 (!strncmp(p, "/run", 4) && (!p[4] || p[4] == '/'));
+    if (!valid || strlen(p) != (size_t)json_object_get_string_len(path))
+        return fail(e, n, "$ref must start with /run, /input or /steps");
+    for (; *p; p++)
+        if (*p == '~' && (p[1] != '0' && p[1] != '1'))
+            return fail(e, n, "Invalid JSON Pointer escape in $ref");
+    json_object_object_foreach(v, key, value)
+    {
+        (void)value;
+        if (strcmp(key, "$ref") && strcmp(key, "default"))
+            return fail(e, n, "$ref object only supports $ref and default");
+    }
+    return 0;
+}
+static bool reference_object(json_object *v)
+{
+    json_object *ignored = NULL;
+    return json_object_is_type(v, json_type_object) &&
+           json_object_object_get_ex(v, "$ref", &ignored);
+}
+static bool url_expression(json_object *v)
+{
+    return (json_object_is_type(v, json_type_string) && *json_object_get_string(v)) ||
+           reference_object(v);
+}
+static bool has_delimiter(const char *s, size_t length)
+{
+    for (size_t i = 1; i < length; i++)
+        if ((s[i - 1] == '{' && s[i] == '{') || (s[i - 1] == '}' && s[i] == '}'))
+            return true;
+    return false;
+}
 static int validate_templates(json_object *v, int depth, char *e, size_t n)
 {
     if (depth > 32)
         return fail(e, n, "Workflow JSON nesting exceeds 32");
     if (json_object_is_type(v, json_type_string)) {
         const char *s = json_object_get_string(v);
-        if (strlen(s) != (size_t)json_object_get_string_len(v))
-            return fail(e, n, "NUL byte in workflow string");
+        size_t length = (size_t)json_object_get_string_len(v);
+        if (strlen(s) != length)
+            return has_delimiter(s, length) ? fail(e, n, "NUL byte in template expression") : 0;
         return template_syntax(s, e, n);
     }
     if (json_object_is_type(v, json_type_object)) {
+        if (reference_object(v))
+            return reference_syntax(v, e, n);
         json_object_object_foreach(v, k, child)
         {
             (void)k;
@@ -125,6 +169,19 @@ int flow_validate(json_object *r, char *e, size_t n)
         return fail(e, n, "defaults must be an object");
     if (vars && !json_object_is_type(vars, json_type_object))
         return fail(e, n, "vars must be an object");
+    json_object *sensitive = NULL;
+    if (json_object_object_get_ex(r, "sensitive_fields", &sensitive)) {
+        if (!json_object_is_type(sensitive, json_type_array) ||
+            json_object_array_length(sensitive) > 64)
+            return fail(e, n, "sensitive_fields must be an array of at most 64 names");
+        for (size_t i = 0; i < json_object_array_length(sensitive); i++) {
+            json_object *field = json_object_array_get_idx(sensitive, i);
+            if (!json_object_is_type(field, json_type_string) ||
+                json_object_get_string_len(field) < 1 || json_object_get_string_len(field) > 80 ||
+                strlen(json_object_get_string(field)) != (size_t)json_object_get_string_len(field))
+                return fail(e, n, "Invalid sensitive_fields name");
+        }
+    }
     if (config_bounds(defaults, e, n))
         return -1;
     json_object *limit = jg(r, "max_steps");
@@ -154,28 +211,56 @@ int flow_validate(json_object *r, char *e, size_t n)
         if (reference(r, s, "next", false, e, n) || config_bounds(s, e, n))
             return -1;
         /* Only rendered values are templates; vars, selectors and names are literal data. */
-        const char *templated[] = {"request", "next_input", "items",   "test",
-                                   "fields",  "url",        "headers", "headers_origin"};
+        const char *templated[] = {"request", "input", "next_input", "items",          "test",
+                                   "fields",  "url",   "headers",    "headers_origin", "value"};
         for (size_t k = 0; k < sizeof(templated) / sizeof(*templated); k++)
             if (validate_templates(jg(s, templated[k]), 0, e, n))
                 return -1;
+        json_object *schema = NULL;
+        if (json_object_object_get_ex(s, "input_schema", &schema) &&
+            flow_schema_validate(schema, e, n))
+            return -1;
+        json_object *retain = jg(s, "retain_steps");
+        if (retain) {
+            if (!json_object_is_type(retain, json_type_array) ||
+                json_object_array_length(retain) > 256)
+                return fail(e, n, "retain_steps must be an array of step IDs");
+            for (size_t k = 0; k < json_object_array_length(retain); k++) {
+                json_object *keep = json_object_array_get_idx(retain, k);
+                if (!json_object_is_type(keep, json_type_string) ||
+                    !flow_step(r, json_object_get_string(keep)))
+                    return fail(e, n, "retain_steps references an unknown step");
+            }
+        }
         if (!strcmp(type, "request")) {
             json_object *req = jg(s, "request");
-            if (!req || !json_object_is_type(req, json_type_object) || !*js(req, "url", ""))
+            if (!req || !json_object_is_type(req, json_type_object) ||
+                !url_expression(jg(req, "url")))
                 return fail(e, n, "request step %s requires request.url", id);
             const char *method = js(req, "method", "GET");
             if (strcmp(method, "GET") && strcmp(method, "POST"))
                 return fail(e, n, "request method must be GET or POST");
-            if (!strstr(js(req, "url", ""), "{{") && !url_valid(js(req, "url", "")))
+            if (json_object_is_type(jg(req, "url"), json_type_string) &&
+                !strstr(js(req, "url", ""), "{{") && !url_valid(js(req, "url", "")))
                 return fail(e, n, "Invalid request URL in %s", id);
             if (jg(req, "query") && !json_object_is_type(jg(req, "query"), json_type_object))
                 return fail(e, n, "query must be an object");
             if (jg(req, "headers") && !json_object_is_type(jg(req, "headers"), json_type_object))
                 return fail(e, n, "headers must be an object");
-            if (jg(req, "body") && jg(req, "json"))
+            json_object *unused = NULL;
+            if (json_object_object_get_ex(req, "body", &unused) &&
+                json_object_object_get_ex(req, "json", &unused))
                 return fail(e, n, "Use body or json, not both");
-            if (jg(req, "body") && !json_object_is_type(jg(req, "body"), json_type_string))
+            if (jg(req, "body") && !json_object_is_type(jg(req, "body"), json_type_string) &&
+                !reference_object(jg(req, "body")))
                 return fail(e, n, "body must be a string");
+            const char *flags[] = {"response_json", "response_body"};
+            for (size_t k = 0; k < 2; k++) {
+                json_object *flag = NULL;
+                if (json_object_object_get_ex(s, flags[k], &flag) &&
+                    !json_object_is_type(flag, json_type_boolean))
+                    return fail(e, n, "%s must be boolean", flags[k]);
+            }
             if (jg(s, "retry_post") && !json_object_is_type(jg(s, "retry_post"), json_type_boolean))
                 return fail(e, n, "retry_post must be boolean");
             json_object *ex = jg(s, "extract");
@@ -217,13 +302,23 @@ int flow_validate(json_object *r, char *e, size_t n)
                 reference(r, s, "then", false, e, n) || reference(r, s, "else", false, e, n))
                 return fail(e, n, "Invalid condition %s", id);
         } else if (!strcmp(type, "download")) {
-            if (!*js(s, "url", ""))
+            if (!url_expression(jg(s, "url")))
                 return fail(e, n, "download requires url");
             if (jg(s, "headers") && !json_object_is_type(jg(s, "headers"), json_type_object))
                 return fail(e, n, "download headers must be an object");
             if (jg(s, "headers_origin") &&
                 !json_object_is_type(jg(s, "headers_origin"), json_type_string))
                 return fail(e, n, "download headers_origin must be a string");
+        } else if (!strcmp(type, "transform")) {
+            if (flow_transform_validate(s, e, n))
+                return -1;
+            json_object *ops = jg(s, "operations");
+            for (size_t k = 0; k < json_object_array_length(ops); k++) {
+                json_object *op = json_object_array_get_idx(ops, k);
+                if (validate_templates(jg(op, "fields"), 0, e, n) ||
+                    validate_templates(jg(op, "test"), 0, e, n))
+                    return -1;
+            }
         } else if (!strcmp(type, "emit") || !strcmp(type, "join")) {
             if (!jg(s, "fields") || !json_object_is_type(jg(s, "fields"), json_type_object))
                 return fail(e, n, "%s requires fields object", id);
@@ -270,8 +365,27 @@ static int charge(size_t bytes, size_t *remaining, char *e, size_t n)
     *remaining -= bytes;
     return 0;
 }
+static int value_depth(json_object *v, unsigned depth)
+{
+    if (depth > 32)
+        return -1;
+    if (json_object_is_type(v, json_type_object)) {
+        json_object_object_foreach(v, key, child)
+        {
+            (void)key;
+            if (value_depth(child, depth + 1))
+                return -1;
+        }
+    } else if (json_object_is_type(v, json_type_array))
+        for (size_t i = 0; i < json_object_array_length(v); i++)
+            if (value_depth(json_object_array_get_idx(v, i), depth + 1))
+                return -1;
+    return 0;
+}
 static int charge_value(json_object *v, size_t *remaining, char *e, size_t n)
 {
+    if (value_depth(v, 0))
+        return fail(e, n, "Referenced JSON nesting exceeds 32");
     size_t bytes = 0;
     json_object_to_json_string_length(v, JSON_C_TO_STRING_PLAIN, &bytes);
     return charge(bytes, remaining, e, n);
@@ -365,9 +479,30 @@ static int render_value(json_object *v, json_object *ctx, json_object **out, int
     *out = NULL;
     if (depth > 32)
         return fail(e, n, "Template nesting exceeds 32");
+    if (json_object_is_type(v, json_type_string) &&
+        strlen(json_object_get_string(v)) != (size_t)json_object_get_string_len(v)) {
+        if (has_delimiter(json_object_get_string(v), (size_t)json_object_get_string_len(v)))
+            return fail(e, n, "NUL byte in template expression");
+        if (charge_value(v, remaining, e, n))
+            return -1;
+        *out = flow_clone(v);
+        return 0;
+    }
     if (json_object_is_type(v, json_type_string))
         return render_string(json_object_get_string(v), ctx, out, false, remaining, e, n);
     if (json_object_is_type(v, json_type_object)) {
+        if (reference_object(v)) {
+            if (reference_syntax(v, e, n))
+                return -1;
+            json_object *selected = NULL;
+            if (json_pointer_lookup(ctx, js(v, "$ref", ""), &selected) &&
+                !json_object_object_get_ex(v, "default", &selected))
+                return fail(e, n, "Missing reference: %s", js(v, "$ref", ""));
+            if (charge_value(selected, remaining, e, n))
+                return -1;
+            *out = flow_clone(selected);
+            return 0;
+        }
         if (charge(2, remaining, e, n))
             return -1;
         *out = json_object_new_object();
@@ -408,7 +543,13 @@ static int render_value(json_object *v, json_object *ctx, json_object **out, int
 int flow_render(json_object *v, json_object *ctx, json_object **out, char *e, size_t n)
 {
     size_t remaining = 4194304;
-    return render_value(v, ctx, out, 0, &remaining, e, n);
+    int rc = render_value(v, ctx, out, 0, &remaining, e, n);
+    if (!rc && value_depth(*out, 0)) {
+        json_object_put(*out);
+        *out = NULL;
+        return fail(e, n, "Rendered JSON nesting exceeds 32");
+    }
+    return rc;
 }
 static bool numeric(json_object *v)
 {
@@ -423,7 +564,18 @@ int flow_test(json_object *test, json_object *ctx, bool *result, char *e, size_t
     size_t remaining = 4194304;
     if (!strcmp(op, "exists") && json_object_is_type(expr, json_type_string))
         rc = render_string(json_object_get_string(expr), ctx, &left, true, &remaining, e, n);
-    else
+    else if (!strcmp(op, "exists") && reference_object(expr)) {
+        if (reference_syntax(expr, e, n))
+            return -1;
+        json_object *selected = NULL;
+        if (!json_pointer_lookup(ctx, js(expr, "$ref", ""), &selected) ||
+            json_object_object_get_ex(expr, "default", &selected)) {
+            if (charge_value(selected, &remaining, e, n))
+                return -1;
+            left = flow_clone(selected);
+        }
+        rc = 0;
+    } else
         rc = flow_render(expr, ctx, &left, e, n);
     if (rc)
         return -1;

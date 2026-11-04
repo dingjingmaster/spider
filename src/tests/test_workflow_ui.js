@@ -36,6 +36,66 @@ assert.deepEqual(initial.steps.map(step => step.type), ['request', 'foreach', 'e
 assert.equal(initial.steps[1].items, '{{steps.request.items}}');
 assert.equal(initial.steps[2].fields.title, '{{input.title}}');
 assert.throws(() => run(`showRule({name:'legacy',url:'https://example.com',fields:[{name:'title'}]})`), /schema_version/);
+// Dataflow contracts preserve omitted mappings, typed URL refs, and optional response flags.
+assert.ok(result('workflowTypes').includes('transform'));
+assert.equal(elements.get('preview-context').value.includes('"run"'), false);
+const schemaOnly = {schema_version:2,name:'Typed contract',entry:'typed',steps:[{id:'typed',type:'request',input_schema:{type:'object',properties:{count:{type:'integer',default:0}}},response_json:true,response_body:false,request:{url:{$ref:'/steps/source/response/json/url'},method:'POST',json:{}}}]};
+context.schemaOnly = schemaOnly; run('showRule(schemaOnly)');
+assert.equal(Object.hasOwn(result('readRule()').steps[0], 'input'), false);
+assert.equal(Object.hasOwn(result('readRule()').steps[0], 'next_input'), false);
+assert.deepEqual(result('readRule()').steps[0].input_schema, schemaOnly.steps[0].input_schema);
+assert.deepEqual(result('readRule()').steps[0].request.url, schemaOnly.steps[0].request.url);
+assert.equal(result('readRule()').steps[0].response_json, true);
+assert.equal(result('readRule()').steps[0].response_body, false);
+const optionalFlagCard = elements.get('workflow-steps').children[0];
+assert.equal(optionalFlagCard.querySelector('[data-request-response-json]').value, 'true');
+assert.equal(optionalFlagCard.querySelector('[data-request-response-body]').value, 'false');
+optionalFlagCard.querySelector('[data-request-response-json]').value = ''; optionalFlagCard.querySelector('[data-request-response-json]').onchange();
+assert.equal(Object.hasOwn(result('readRule()').steps[0], 'response_json'), false);
+optionalFlagCard.querySelector('[data-request-response-json]').value = 'false'; optionalFlagCard.querySelector('[data-request-response-json]').onchange();
+assert.equal(result('readRule()').steps[0].response_json, false);
+run(`showRule({...schemaOnly,steps:[{...schemaOnly.steps[0],request:{url:{$ref:'/input/url',default:'https://example.com/'},method:'POST',body:{$ref:'/input/raw'}}}]})`);
+assert.deepEqual(result('readRule()').steps[0].request.body, {$ref:'/input/raw'});
+assert.deepEqual(result('readRule()').steps[0].request.url, {$ref:'/input/url',default:'https://example.com/'});
+run('showRule(schemaOnly)');
+
+assert.equal(run(`escapePointer('key.with.dot/~name')`), 'key.with.dot~1~0name');
+run(`renderBindingTree({run:{},input:{},steps:{source:{items:[{'key.with.dot/~name':{nested:[false,0]}}]}},source_url:'https://example.com/',_debug_secrets:['hidden']}, 'Test context')`);
+for (const illegal of ['', '/source_url', '/_debug_secrets', '/inputNotRoot', '/input/~2']) {
+  assert.throws(() => run(`bindReference('typed','input','',${JSON.stringify(illegal)})`), /run.*input.*steps/);
+}
+for (const illegal of ['', '/source_url', '/_debug_secrets']) {
+  const disabledChoice = elements.get('binding-tree').querySelectorAll('[data-pointer]').find(element => element.dataset.pointer === illegal);
+  assert.equal(disabledChoice.disabled, true);
+  disabledChoice.onclick(); assert.equal(run('state.selectedPointer'), null);
+}
+const pointer = '/steps/source/items/0/key.with.dot~1~0name';
+const treeChoice = elements.get('binding-tree').querySelectorAll('[data-pointer]').find(element => element.dataset.pointer === pointer);
+assert.ok(treeChoice); treeChoice.onclick(); assert.equal(elements.get('binding-path').value, pointer);
+run(`bindReference('typed','json','arbitrary.key/~',${JSON.stringify(pointer)})`);
+assert.deepEqual(result('readRule()').steps[0].request.json['arbitrary.key/~'], {$ref:pointer});
+run(`bindReference('typed','url','',${JSON.stringify(pointer)})`);
+assert.deepEqual(result('readRule()').steps[0].request.url, {$ref:pointer});
+run(`bindReference('typed','input','',${JSON.stringify(pointer)})`);
+run(`bindReference('typed','next_input','',${JSON.stringify(pointer)})`);
+assert.deepEqual(result('readRule()').steps[0].input, {$ref:pointer});
+assert.deepEqual(result('readRule()').steps[0].next_input, {$ref:pointer});
+run(`bindReference('typed','query','key.with.dot',${JSON.stringify(pointer)})`);
+run(`bindReference('typed','headers','X-Value',${JSON.stringify(pointer)})`);
+run(`bindReference('typed','json','__proto__',${JSON.stringify(pointer)})`);
+assert.deepEqual(result('readRule()').steps[0].request.query['key.with.dot'], {$ref:pointer});
+assert.deepEqual(result('readRule()').steps[0].request.headers['X-Value'], {$ref:pointer});
+assert.equal(Object.hasOwn(result('readRule()').steps[0].request.json, '__proto__'), true);
+const mappedCard = elements.get('workflow-steps').children[0];
+mappedCard.querySelector('[data-step-input]').value = 'false'; mappedCard.querySelector('[data-step-input]').onchange();
+mappedCard.querySelector('[data-step-next-input]').value = 'null'; mappedCard.querySelector('[data-step-next-input]').onchange();
+assert.equal(result('readRule()').steps[0].input, false);
+assert.equal(result('readRule()').steps[0].next_input, null);
+mappedCard.querySelector('[data-step-input]').value = ''; mappedCard.querySelector('[data-step-input]').onchange();
+assert.equal(Object.hasOwn(result('readRule()').steps[0], 'input'), false);
+assert.deepEqual(result('readRule()').steps[0].input_schema, schemaOnly.steps[0].input_schema);
+run(`showRule({schema_version:2,name:'Transform',entry:'clean',steps:[{id:'clean',type:'transform',operations:[{op:'trim'}]}]})`);
+assert.equal(result('readRule()').steps[0].operations[0].op, 'trim');
 // Login and pure HTTP steps may omit extraction; UI must preserve that omission.
 const pureRequest = {schema_version:2,name:'Login only',entry:'login',steps:[{id:'login',type:'request',request:{url:'https://example.com/login',method:'POST',json:{user:'demo'},headers:{'X-Login':'yes'},headers_origin:'https://example.com',body_origin:'https://example.com'},retry_post:false}]};
 context.pureRequest = pureRequest;
@@ -107,6 +167,67 @@ run(`state.run = 5; renderSteps([{id:11,step_id:'list',parent_id:null,branch_key
 assert.equal(elements.get('trace-detail').hidden, true);
 assert.equal(elements.get('trace-output').textContent, '');
 (async () => {
+  // Continuous preview keeps opaque session state on the server; redacted context is never replayed.
+  context.debugRule = {schema_version:2,name:'Debug flow',entry:'login',vars:{site:'https://example.com'},steps:[{id:'login',type:'request',request:{url:'https://example.com/login',method:'POST',json:{user:'demo'}},next:'clean'},{id:'clean',type:'transform',operations:[{op:'trim'}]}]};
+  run('showRule(debugRule)');
+  elements.get('preview-context').value = '{"input":{},"steps":{}}'; elements.get('preview-context').onchange();
+  run(`globalThis.debugCalls = []; api = async (route, method, payload) => { debugCalls.push({route,payload}); return {session_id:'opaque-session',step_id:payload.step_id,output:{token:'[REDACTED]',text:hostile},context:{run:{site:'https://example.com'},input:{},steps:{login:{token:'[REDACTED]'}}},request:payload.step_id === 'login' ? {url:'https://example.com/login',headers:{Authorization:'[REDACTED]'},body:hostile} : null,next_steps:payload.step_id === 'login' ? ['clean'] : [],notice:'Only selected step'}; };`);
+  await run(`runDebugStep(false,'login')`);
+  assert.equal(result('debugCalls')[0].route, '/api/preview/step');
+  assert.equal(Object.hasOwn(result('debugCalls')[0].payload.context, 'run'), false);
+  assert.equal(run('state.debugSession'), 'opaque-session');
+  assert.equal(elements.get('debug-next').value, 'clean');
+  await elements.get('debug-continue').onclick();
+  assert.equal(result('debugCalls')[1].payload.step_id, 'clean');
+  assert.equal(result('debugCalls')[1].payload.session_id, 'opaque-session');
+  assert.equal(Object.hasOwn(result('debugCalls')[1].payload, 'context'), false);
+  assert.equal(elements.get('debug-continue').disabled, true);
+  // Dry rendering is displayed only as text and preserves session continuity.
+  elements.get('debug-step').value = 'login'; elements.get('debug-step').onchange();
+  await run(`runDebugStep(true,'login')`);
+  assert.equal(result('debugCalls')[2].payload.dry_run, true);
+  assert.equal(result('debugCalls')[2].payload.session_id, 'opaque-session');
+  assert.match(elements.get('debug-request').textContent, /<img src=x/);
+  assert.equal(elements.get('debug-request').children.length, 0);
+  assert.match(elements.get('debug-notice').textContent, /未发送/);
+  assert.equal(result('debugCalls').some(call => call.route === '/api/preview/release'), false);
+  elements.get('debug-reset').onclick();
+  assert.equal(run('state.debugSession'), null);
+  assert.equal(elements.get('debug-result').hidden, true);
+  assert.equal(elements.get('debug-request').textContent, '');
+  assert.ok(result('debugCalls').some(call => call.route === '/api/preview/release' && call.payload.session_id === 'opaque-session'));
+  // Reset/new preview and edits invalidate pending asynchronous results.
+  run(`globalThis.pendingDebug = []; globalThis.releasedDebug=[]; api = (route, method, payload) => {if(route === '/api/preview/release'){releasedDebug.push(payload.session_id);return Promise.resolve({});}return new Promise(resolve => pendingDebug.push({payload,resolve}));}; globalThis.oldDebug = runDebugStep(false,'login');`);
+  elements.get('debug-reset').onclick();
+  run(`globalThis.newDebug = runDebugStep(false,'login'); pendingDebug[1].resolve({session_id:'fresh-session',step_id:'login',output:{value:'fresh'},context:{steps:{}},request:null,next_steps:['clean'],notice:''});`);
+  await run('newDebug');
+  run(`pendingDebug[0].resolve({session_id:'old-session',step_id:'login',output:{value:'stale'},context:{steps:{}},request:null,next_steps:[],notice:''});`);
+  await run('oldDebug');
+  assert.equal(run('state.debugSession'), 'fresh-session');
+  assert.match(elements.get('debug-output').textContent, /fresh/);
+  assert.doesNotMatch(elements.get('debug-output').textContent, /stale/);
+  assert.ok(result('releasedDebug').includes('old-session'));
+  assert.equal(result('releasedDebug').includes('fresh-session'), false);
+  run(`globalThis.editedDebug = runDebugStep(false,'login')`);
+  elements.get('preview-context').value = '{"input":{"changed":true}}'; elements.get('preview-context').oninput();
+  run(`pendingDebug[2].resolve({session_id:'discard-context',step_id:'login',output:{value:'discard'},context:{},request:null,next_steps:[],notice:''});`);
+  await run('editedDebug');
+  assert.equal(run('state.debugSession'), null); assert.equal(elements.get('debug-result').hidden, true);
+  run(`globalThis.ruleEditDebug = runDebugStep(false,'login')`);
+  elements.get('wf-name').value = 'Changed rule'; run('captureWorkflow()');
+  run(`pendingDebug[3].resolve({session_id:'discard-rule',step_id:'login',output:{value:'discard'},context:{},request:null,next_steps:[],notice:''});`);
+  await run('ruleEditDebug');
+  assert.equal(run('state.debugSession'), null); assert.equal(elements.get('debug-output').textContent, '');
+  // foreach includes a selected index; parallel requires an explicit branch.
+  run(`showRule({...debugRule,steps:[{id:'login',type:'foreach',items:[],body:'clean'},{id:'clean',type:'transform',operations:[{op:'trim'}]}]}); globalThis.groupCalls=[]; api = async (route,method,payload) => {if(route !== '/api/preview/step') return [];groupCalls.push(payload);return {session_id:'group',step_id:payload.step_id,output:{},context:{input:{}},request:null,next_steps:['clean'],notice:'One selected record only'};};`);
+  elements.get('debug-item-index').value = '2'; await run(`runDebugStep(false,'login')`);
+  assert.equal(result('groupCalls')[0].item_index, 2);
+  assert.match(elements.get('debug-notice').textContent, /One selected/);
+  run(`showRule({...debugRule,steps:[{id:'login',type:'parallel',branches:{one:'clean'}},{id:'clean',type:'transform',operations:[{op:'trim'}]}]})`);
+  await assert.rejects(run(`runDebugStep(false,'login')`), /parallel 分支/);
+  elements.get('debug-branch').value = 'one'; await run(`runDebugStep(false,'login')`);
+  assert.equal(result('groupCalls')[1].branch, 'one');
+  run(`showRule({...workflowExample(),opaque:[1,2]}); state.run=5; renderSteps([{id:11,step_id:'list',status:'done'},{id:12,step_id:'detail',status:'done'}])`);
   run(`api = async route => { globalThis.detailRoute = route; return {id:11,step_id:'list',context:{input:hostile},output:{response:{body:hostile}},error:hostile}; };`);
   await run('selectStep(11)');
   assert.equal(run('detailRoute'), '/api/runs/5/steps/11');
@@ -136,6 +257,11 @@ assert.equal(elements.get('trace-output').textContent, '');
   assert.equal(result('lastPayload').context.run.site, 'example');
   assert.equal(elements.get('raw-response').textContent, hostile);
   assert.equal(elements.get('preview-card').hidden, false);
+  run(`globalThis.resolveLegacy = null; api = () => new Promise(resolve => {resolveLegacy=resolve;}); globalThis.staleLegacy = $('preview').onclick();`);
+  elements.get('preview-context').value = '{"input":{"edited":true}}'; elements.get('preview-context').oninput();
+  run(`resolveLegacy({items:[{title:'stale'}],response:{status:200,body:'stale'}});`);
+  await run('staleLegacy');
+  assert.equal(elements.get('preview-card').hidden, true);
   elements.get('preview-context').value = 'invalid';
   await elements.get('preview').onclick();
   assert.equal(elements.get('preview-card').hidden, true);

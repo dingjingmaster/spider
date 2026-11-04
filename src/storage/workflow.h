@@ -7,7 +7,7 @@ int wf_initialize(Store *, char *, size_t);
 json_object *wf_claim(Store *, char *, size_t);
 int wf_finish(Store *, json_object *, json_object *, json_object *, json_object *, json_object *,
               bool, char *, size_t);
-int wf_fork(Store *, json_object *, json_object *, char *, size_t);
+int wf_fork(Store *, json_object *, json_object *, json_object *, char *, size_t);
 json_object *wf_group_results(Store *, int64_t, char *, size_t);
 int wf_failure(Store *, json_object *, const char *, const char *, bool, int, char *, size_t);
 int wf_cancel(Store *, int64_t, char *, size_t);

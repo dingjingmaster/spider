@@ -333,8 +333,11 @@ int wf_finish(Store *s, json_object *job, json_object *output, json_object *cont
     json_object_put(stored);
     return end(s, rc, e, n);
 }
-int wf_fork(Store *s, json_object *job, json_object *children, char *e, size_t n)
+int wf_fork(Store *s, json_object *job, json_object *children, json_object *context, char *e,
+            size_t n)
 {
+    if (bounded(context, NULL, e, n))
+        return -1;
     if (begin(s, e, n))
         return -1;
     bool done;
@@ -344,9 +347,11 @@ int wf_fork(Store *s, json_object *job, json_object *children, char *e, size_t n
         rc = insert_children(s, stored, children, true, e, n);
         if (!rc) {
             size_t count = children ? json_object_array_length(children) : 0;
-            rc = sql(s, "UPDATE step_instances SET status=%Q,pending=%lld,phase=%d WHERE id=%lld",
+            rc = sql(s,
+                     "UPDATE step_instances SET status=%Q,pending=%lld,phase=%d,context=%Q WHERE "
+                     "id=%lld",
                      count ? "waiting" : "queued", (sqlite3_int64)count, count ? 0 : 1,
-                     (sqlite3_int64)id(stored, "id"));
+                     raw(context), (sqlite3_int64)id(stored, "id"));
         }
     }
     json_object_put(stored);

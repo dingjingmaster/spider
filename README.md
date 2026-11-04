@@ -48,7 +48,9 @@ cmake --build build -j
 }
 ```
 
-HTML 使用 CSS 选择器，JSON 使用 JSON Pointer；字段类型支持 string、number、integer、boolean。提取本身不保存结果，`extract.fields[].download: true` 只归一化 URL，不触发下载；保存和下载分别使用 emit 和 download 步骤。下一页地址也只提取为 next_url，需用后续步骤显式继续；工作流不自动按 URL 去重。
+HTML 使用 CSS 选择器，JSON 使用 JSON Pointer；字段类型支持 string、number、integer、boolean，以及保留嵌套值的 object、array、json。提取本身不保存结果，`extract.fields[].download: true` 只归一化 URL，不触发下载；保存和下载分别使用 emit 和 download 步骤。下一页地址也只提取为 next_url，需用后续步骤显式继续；工作流不自动按 URL 去重。
+
+步骤可通过保留类型的 JSON Pointer 引用传递对象、数组和数值，使用 input/input_schema 做输入映射与校验，使用 transform 管道整理数据。网页支持从 JSON 树点选绑定、连续单步调试和仅生成请求；临时调试会话保留上下文与登录 Cookie，展示结果脱敏。可导入 [嵌套 JSON 查询 → 映射/校验 → POST → 保存示例](src/rule/examples/json-dataflow.json)，替换 example.com 地址后使用。响应保留与调试限额见 [JSON 数据流说明](docs/workflows.md#输入映射与类型约束)。
 
 [工作流说明](docs/workflows.md) 包含列表/详情、请求参数、字面 vars、分支汇合、迭代计数、分页、认证头范围、资源限额、恢复与调试。HTTP/HTTPS 以外的协议不接受，HTTPS 默认校验证书。
 
@@ -96,6 +98,8 @@ src/
 | GET / POST | `/api/spiders` | 列表、新建 |
 | GET / PUT / DELETE | `/api/spiders/{id}` | 查看、更新、软删除 |
 | POST | `/api/preview` | 提交 `{rule,step_id,context}`，试采集选中 request 步骤 |
+| POST | `/api/preview/step` | 临时会话内单步调试，支持继续、分支选择及 dry_run |
+| POST | `/api/preview/release` | 释放临时调试会话，提交 `{session_id}` |
 | POST | `/api/spiders/{id}/run` | 手动启动 |
 | GET | `/api/runs?spider_id={id}` | 最近 200 次运行 |
 | GET | `/api/runs/{id}` | 状态、计数、规则快照 |

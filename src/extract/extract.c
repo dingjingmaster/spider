@@ -1,4 +1,5 @@
 #include "extract.h"
+#include "rule/workflow.h"
 #include <lexbor/html/html.h>
 #include <lexbor/dom/dom.h>
 #include <lexbor/css/parser.h>
@@ -71,14 +72,30 @@ static char *node_value(lxb_dom_node_t *node, const char *attr)
         text = lxb_dom_node_text_content(node, &len);
     return text ? trim_copy((const char *)text, len) : NULL;
 }
-static int convert_value(json_object *field, json_object *raw, json_object **value, char *e,
-                         size_t n)
+static int convert_value(json_object *field, json_object *raw, bool parse_text, json_object **value,
+                         char *e, size_t n)
 {
     const char *name = js(field, "name", ""), *type = js(field, "type", "string");
     if (!raw || json_object_is_type(raw, json_type_null)) {
         if (jb(field, "required", false))
             return fail(e, n, "Required field missing: %s", name);
         *value = NULL;
+        return 0;
+    }
+    if (!strcmp(type, "object") || !strcmp(type, "array") || !strcmp(type, "json")) {
+        json_object *parsed = NULL;
+        if (parse_text && json_object_is_type(raw, json_type_string)) {
+            if (json_value_parse(json_object_get_string(raw), &parsed, e, n))
+                return fail(e, n, "Field %s is not valid JSON", name);
+        } else
+            parsed = flow_clone(raw);
+        if ((!strcmp(type, "object") && !json_object_is_type(parsed, json_type_object)) ||
+            (!strcmp(type, "array") && !json_object_is_type(parsed, json_type_array)) ||
+            (!parsed && jb(field, "required", false))) {
+            json_object_put(parsed);
+            return fail(e, n, "Field %s does not match type %s", name, type);
+        }
+        *value = parsed;
         return 0;
     }
     const char *str = json_object_get_string(raw);
@@ -148,8 +165,7 @@ int extract_document(json_object *rule, const char *body, const char *url, json_
             rows.len = 1;
         }
     } else {
-        root = json_parse(body, e, n);
-        if (!root)
+        if (json_value_parse(body, &root, e, n))
             goto done;
     }
     json_object *json_rows = root;
@@ -202,7 +218,7 @@ int extract_document(json_object *rule, const char *body, const char *url, json_
                 if (raw)
                     json_object_get(raw);
             }
-            if (convert_value(f, raw, &v, e, n)) {
+            if (convert_value(f, raw, html, &v, e, n)) {
                 if (raw)
                     json_object_put(raw);
                 json_object_put(item);

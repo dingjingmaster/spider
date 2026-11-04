@@ -1,6 +1,8 @@
 #include "workflow.h"
 #include "rule/workflow.h"
 #include "rule/rule.h"
+#include "rule/data.h"
+#include "common/redact.h"
 #include "storage/workflow.h"
 #include "http/http.h"
 #include "extract/extract.h"
@@ -43,20 +45,28 @@ static int pause_step(FlowExecution *x, int ms)
     }
     return halted(x) ? -1 : 0;
 }
-static json_object *base_context(json_object *rule, json_object *supplied)
+json_object *workflow_context(json_object *rule, json_object *supplied)
 {
+    if (supplied && !json_object_is_type(supplied, json_type_object))
+        return NULL;
     json_object *ctx = flow_clone(supplied);
     if (!ctx || !json_object_is_type(ctx, json_type_object)) {
         json_object_put(ctx);
         ctx = json_object_new_object();
     }
-    if (!jg(ctx, "run"))
+    json_object *ignored = NULL;
+    if (!json_object_object_get_ex(ctx, "run", &ignored))
         json_object_object_add(
             ctx, "run", jg(rule, "vars") ? flow_clone(jg(rule, "vars")) : json_object_new_object());
-    if (!jg(ctx, "input"))
+    if (!json_object_object_get_ex(ctx, "input", &ignored))
         json_object_object_add(ctx, "input", json_object_new_object());
-    if (!jg(ctx, "steps"))
+    if (!json_object_object_get_ex(ctx, "steps", &ignored))
         json_object_object_add(ctx, "steps", json_object_new_object());
+    if (!json_object_is_type(jg(ctx, "run"), json_type_object) ||
+        !json_object_is_type(jg(ctx, "steps"), json_type_object)) {
+        json_object_put(ctx);
+        return NULL;
+    }
     return ctx;
 }
 static void options(json_object *out, json_object *source)
@@ -128,8 +138,8 @@ done:
         fail(e, n, "Cannot construct query URL");
     return rc;
 }
-static json_object *build_request(json_object *rule, json_object *step, json_object *context,
-                                  char *e, size_t n)
+json_object *workflow_request(json_object *rule, json_object *step, json_object *context, char *e,
+                              size_t n)
 {
     json_object *rendered = NULL;
     if (flow_render(jg(step, "request"), context, &rendered, e, n))
@@ -201,8 +211,8 @@ bad:
     json_object_put(out);
     return NULL;
 }
-static json_object *response_output(json_object *step, json_object *request, HttpResponse *r,
-                                    char *e, size_t n)
+json_object *workflow_response(json_object *step, json_object *request, HttpResponse *r, char *e,
+                               size_t n)
 {
     json_object *items = NULL;
     char *next = NULL;
@@ -217,11 +227,23 @@ static json_object *response_output(json_object *step, json_object *request, Htt
     free(next);
     json_object_object_add(response, "status", json_object_new_int64(r->status));
     json_object_object_add(response, "url", json_object_new_string(r->url));
-    json_object_object_add(
-        response, "body",
-        json_object_new_string_len(r->body, r->size > 65536 ? 65536 : (int)r->size));
+    if (jb(step, "response_json", false)) {
+        json_object *value = NULL;
+        if (json_value_parse(r->body, &value, e, n)) {
+            json_object_put(response);
+            json_object_put(out);
+            return NULL;
+        }
+        json_object_object_add(response, "json", value);
+    }
+    if (jb(step, "response_body", true))
+        json_object_object_add(
+            response, "body",
+            json_object_new_string_len(r->body, r->size > 65536 ? 65536 : (int)r->size));
     json_object_object_add(response, "bytes", json_object_new_int64((int64_t)r->size));
-    json_object_object_add(response, "truncated", json_object_new_boolean(r->size > 65536));
+    json_object_object_add(
+        response, "truncated",
+        json_object_new_boolean(jb(step, "response_body", true) && r->size > 65536));
     json_object_object_add(out, "response", response);
     return out;
 }
@@ -263,6 +285,27 @@ static int next_input(json_object *step, json_object *context, char *e, size_t n
     json_object_object_add(context, "input", value);
     return 0;
 }
+int workflow_complete_context(json_object *rule, json_object *step, json_object *context,
+                              json_object *output, char *e, size_t n)
+{
+    if (debug_track_secrets(context, output, rule, e, n))
+        return -1;
+    if (update_context(context, js(step, "id", ""), output, e, n) ||
+        next_input(step, context, e, n))
+        return -1;
+    json_object *keep = jg(step, "retain_steps");
+    if (keep) {
+        json_object *old = jg(context, "steps"), *retained = json_object_new_object();
+        for (size_t i = 0; i < json_object_array_length(keep); i++) {
+            const char *id = json_object_get_string(json_object_array_get_idx(keep, i));
+            json_object *value = NULL;
+            if (json_object_object_get_ex(old, id, &value))
+                json_object_object_add(retained, id, flow_clone(value));
+        }
+        json_object_object_add(context, "steps", retained);
+    }
+    return 0;
+}
 static void handle_failure(App *app, json_object *job, json_object *step, json_object *context,
                            const char *message, bool retry)
 {
@@ -283,8 +326,7 @@ static void handle_failure(App *app, json_object *job, json_object *step, json_o
             goto fatal;
         json_object *out = json_object_new_object();
         json_object_object_add(out, "error", json_object_new_string(message));
-        if (update_context(context, js(step, "id", ""), out, e, sizeof(e)) ||
-            next_input(step, context, e, sizeof(e))) {
+        if (workflow_complete_context(jg(job, "snapshot"), step, context, out, e, sizeof(e))) {
             json_object_put(out);
             goto fatal;
         }
@@ -348,7 +390,7 @@ static int fork_step(App *app, json_object *job, json_object *step, json_object 
             json_object_array_add(children, c);
         }
     }
-    rc = wf_fork(&app->store, job, children, e, n);
+    rc = wf_fork(&app->store, job, children, ctx, e, n);
 done:
     json_object_put(values);
     json_object_put(children);
@@ -367,8 +409,8 @@ static int group_output(App *app, json_object *job, json_object *step, json_obje
         for (size_t i = 0; i < count; i++) {
             char key[40];
             snprintf(key, sizeof(key), "%zu", i);
-            json_object *v = jg(results, key);
-            if (!v) {
+            json_object *v = NULL;
+            if (!json_object_object_get_ex(results, key, &v)) {
                 json_object_put(array);
                 json_object_put(results);
                 return fail(e, n, "Incomplete foreach group results");
@@ -430,6 +472,9 @@ void workflow_execute(App *app, json_object *job)
     if (halted(&execution))
         goto done;
     const char *type = js(step, "type", ""), *target = js(step, "next", "");
+    if (!ji(job, "phase", 0) && (debug_track_secrets(ctx, NULL, rule, e, sizeof(e)) ||
+                                 flow_input_prepare(step, ctx, e, sizeof(e))))
+        goto failed;
     if ((!strcmp(type, "foreach") || !strcmp(type, "parallel")) && !ji(job, "phase", 0)) {
         if (fork_step(app, job, step, ctx, e, sizeof(e)))
             handle_failure(app, job, step, ctx, e, false);
@@ -439,8 +484,10 @@ void workflow_execute(App *app, json_object *job)
         if (group_output(app, job, step, &out, e, sizeof(e)))
             goto failed;
     } else if (!strcmp(type, "request")) {
-        request = build_request(rule, step, ctx, e, sizeof(e));
+        request = workflow_request(rule, step, ctx, e, sizeof(e));
         if (!request)
+            goto failed;
+        if (debug_track_secrets(ctx, request, rule, e, sizeof(e)))
             goto failed;
         if (!strcmp(js(request, "method", "GET"), "POST") && !jb(step, "retry_post", false)) {
             json_object *previous = store_query(
@@ -484,7 +531,7 @@ void workflow_execute(App *app, json_object *job)
                     (!strcmp(js(request, "method", "GET"), "GET") || jb(step, "retry_post", false));
             goto failed;
         }
-        out = response_output(step, request, &response, e, sizeof(e));
+        out = workflow_response(step, request, &response, e, sizeof(e));
         if (out)
             json_object_object_add(ctx, "source_url", json_object_new_string(response.url));
         http_response_free(&response);
@@ -502,6 +549,10 @@ void workflow_execute(App *app, json_object *job)
                                flow_clone(jg(json_object_array_get_idx(counts, 0), "iteration")));
         json_object_put(counts);
         page = true;
+    } else if (!strcmp(type, "transform")) {
+        if (flow_transform(step, ctx, &out, e, sizeof(e)) ||
+            debug_track_transform(ctx, step, out, rule, e, sizeof(e)))
+            goto failed;
     } else if (!strcmp(type, "condition")) {
         bool result = false;
         if (flow_test(jg(step, "test"), ctx, &result, e, sizeof(e)))
@@ -519,9 +570,11 @@ void workflow_execute(App *app, json_object *job)
             if (jg(step, keys[i]))
                 json_object_object_add(spec, keys[i], flow_clone(jg(step, keys[i])));
         json_object_object_add(download, "request", spec);
-        request = build_request(rule, download, ctx, e, sizeof(e));
+        request = workflow_request(rule, download, ctx, e, sizeof(e));
         json_object_put(download);
         if (!request)
+            goto failed;
+        if (debug_track_secrets(ctx, request, rule, e, sizeof(e)))
             goto failed;
         json_object *value = flow_clone(jg(request, "url"));
         session = session_acquire(app->sessions, run, e, sizeof(e));
@@ -558,9 +611,7 @@ void workflow_execute(App *app, json_object *job)
         fail(e, sizeof(e), "Unknown step type");
         goto failed;
     }
-    if (update_context(ctx, js(step, "id", ""), out, e, sizeof(e)))
-        goto failed;
-    if (next_input(step, ctx, e, sizeof(e)))
+    if (workflow_complete_context(rule, step, ctx, out, e, sizeof(e)))
         goto failed;
     next = continuation(job, ctx, target);
     if (wf_finish(&app->store, job, out, ctx, next, !strcmp(type, "emit") ? out : NULL, page, e,
@@ -590,15 +641,26 @@ json_object *workflow_preview(App *app, json_object *payload, char *e, size_t n)
         fail(e, n, "Preview requires a request step");
         return NULL;
     }
-    json_object *ctx = base_context(rule, jg(payload, "context")),
-                *request = build_request(rule, step, ctx, e, n), *out = NULL;
+    json_object *ctx = workflow_context(rule, jg(payload, "context")), *request = NULL, *out = NULL;
+    if (!ctx || debug_track_secrets(ctx, NULL, rule, e, n) || flow_input_prepare(step, ctx, e, n)) {
+        if (!ctx)
+            fail(e, n, "Preview context.run and context.steps must be objects");
+        json_object_put(ctx);
+        return NULL;
+    }
+    request = workflow_request(rule, step, ctx, e, n);
     HttpSession *session = session_temporary();
     HttpResponse response = {0};
     FlowExecution execution = {app, 0};
-    if (request && session &&
+    if (request && session && !debug_track_secrets(ctx, request, rule, e, n) &&
         !http_fetch_session(request, js(request, "url", ""), NULL, halted, &execution, session,
                             &response, e, n))
-        out = response_output(step, request, &response, e, n);
+        out = workflow_response(step, request, &response, e, n);
+    if (out) {
+        json_object *safe = debug_redact_with_context(out, rule, ctx);
+        json_object_put(out);
+        out = safe;
+    }
     http_response_free(&response);
     session_destroy(session);
     json_object_put(request);

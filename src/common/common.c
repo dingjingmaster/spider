@@ -44,24 +44,86 @@ int fail(char *e, size_t n, const char *fmt, ...)
 }
 json_object *json_parse(const char *s, char *e, size_t n)
 {
+    json_object *value = NULL;
+    json_value_parse(s, &value, e, n);
+    return value;
+}
+int json_value_parse(const char *s, json_object **value, char *e, size_t n)
+{
+    *value = NULL;
     if (!s)
-        return NULL;
+        return fail(e, n, "Missing JSON");
     json_tokener *t = json_tokener_new();
     if (!t)
-        return NULL;
-    json_object *j = json_tokener_parse_ex(t, s, (int)strlen(s));
+        return fail(e, n, "Out of memory");
+    size_t length = strlen(s);
+    json_object *j = json_tokener_parse_ex(t, s, (int)length + 1);
     enum json_tokener_error code = json_tokener_get_error(t);
     size_t end = json_tokener_get_parse_end(t);
-    while (s[end] && isspace((unsigned char)s[end]))
+    while (end < length && isspace((unsigned char)s[end]))
         end++;
-    if (code != json_tokener_success || s[end]) {
+    int rc = 0;
+    if (code != json_tokener_success || end < length) {
         fail(e, n, "Invalid JSON: %s", json_tokener_error_desc(code));
         if (j)
             json_object_put(j);
         j = NULL;
+        rc = -1;
     }
     json_tokener_free(t);
-    return j;
+    *value = j;
+    return rc;
+}
+int json_pointer_lookup(json_object *root, const char *pointer, json_object **value)
+{
+    *value = NULL;
+    if (!pointer || (*pointer && *pointer != '/'))
+        return -1;
+    json_object *current = root;
+    const char *p = pointer;
+    while (*p) {
+        const char *start = ++p;
+        while (*p && *p != '/')
+            p++;
+        size_t length = (size_t)(p - start);
+        char *key = malloc(length + 1);
+        if (!key)
+            return -1;
+        size_t used = 0;
+        for (size_t i = 0; i < length; i++) {
+            char c = start[i];
+            if (c == '~') {
+                if (++i == length || (start[i] != '0' && start[i] != '1')) {
+                    free(key);
+                    return -1;
+                }
+                c = start[i] == '0' ? '~' : '/';
+            }
+            key[used++] = c;
+        }
+        key[used] = 0;
+        int rc = -1;
+        if (json_object_is_type(current, json_type_object))
+            rc = json_object_object_get_ex(current, key, &current) ? 0 : -1;
+        else if (json_object_is_type(current, json_type_array) && *key &&
+                 !(key[0] == '0' && key[1])) {
+            bool digits = true;
+            for (size_t i = 0; i < used; i++)
+                if (key[i] < '0' || key[i] > '9')
+                    digits = false;
+            errno = 0;
+            unsigned long long idx = digits ? strtoull(key, NULL, 10) : 0;
+            if (digits && !errno && idx < json_object_array_length(current)) {
+                current = json_object_array_get_idx(current, (size_t)idx);
+                rc = 0;
+            }
+        }
+        free(key);
+        if (rc)
+            return -1;
+    }
+    *value = current;
+    return 0;
 }
 int mkdirs(const char *p)
 {

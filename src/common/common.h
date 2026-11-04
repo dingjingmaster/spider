@@ -11,6 +11,10 @@ int ji(json_object *obj, const char *key, int fallback);
 bool jb(json_object *obj, const char *key, bool fallback);
 json_object *jg(json_object *obj, const char *key);
 json_object *json_parse(const char *text, char *error, size_t cap);
+/* Success can produce NULL for JSON null. */
+int json_value_parse(const char *text, json_object **value, char *error, size_t cap);
+/* RFC 6901 lookup; success includes an explicitly present JSON null. */
+int json_pointer_lookup(json_object *root, const char *pointer, json_object **value);
 int fail(char *error, size_t cap, const char *fmt, ...);
 int mkdirs(const char *path);
 char *url_resolve(const char *base, const char *relative);

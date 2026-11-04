@@ -152,7 +152,8 @@ def main():
             bad=json.loads(json.dumps(rule));bad['entry']='not_defined'
             api('/api/spiders','POST',bad,400)
             preview=api('/api/preview','POST',{'rule':rule,'step_id':'login','context':{}})
-            assert preview['items']==[{'token':'step-token'}]
+            assert preview['items']==[{'token':'[REDACTED]'}]
+            assert 'step-token' not in json.dumps(preview)
             run=run_rule(rule);result=wait(run)
             assert result['status']=='succeeded',result
             items=sorted([r['data'] for r in api(f'/api/runs/{run}/items')],key=lambda x:x['id'])

@@ -52,6 +52,39 @@ int main(void)
     assert(extract_document(rule, "not json", "https://example.com/", &items, &next, error,
                             sizeof(error)) < 0);
     json_object_put(rule);
+    rule = parse("{\"name\":\"nested\",\"url\":\"https://example.com/\",\"format\":\"json\","
+                 "\"fields\":[{\"name\":\"order\",\"selector\":\"/order\",\"type\":\"object\"},"
+                 "{\"name\":\"lines\",\"selector\":\"/order/lines\",\"type\":\"array\"},"
+                 "{\"name\":\"flag\",\"selector\":\"/flag\",\"type\":\"json\"}]}");
+    assert(request_validate(rule, error, sizeof(error)) == 0);
+    assert(extract_document(rule, "{\"order\":{\"lines\":[{\"qty\":2}]},\"flag\":false}",
+                            "https://example.com/", &items, &next, error, sizeof(error)) == 0);
+    first = json_object_array_get_idx(items, 0);
+    assert(json_object_is_type(jg(first, "order"), json_type_object));
+    assert(json_object_is_type(jg(first, "lines"), json_type_array));
+    assert(json_object_is_type(jg(first, "flag"), json_type_boolean) && !jb(first, "flag", true));
+    json_object_put(items);
+    assert(extract_document(rule, "{\"order\":\"wrong\"}", "https://example.com/", &items, &next,
+                            error, sizeof(error)) < 0);
+    json_object_object_add(rule, "format", json_object_new_string("html"));
+    json_object_object_add(
+        rule, "fields", parse("[{\"name\":\"data\",\"selector\":\"script\",\"type\":\"object\"}]"));
+    assert(extract_document(rule, "<script>{\"nested\":[1,false]}</script>", "https://example.com/",
+                            &items, &next, error, sizeof(error)) == 0);
+    assert(json_object_is_type(jg(json_object_array_get_idx(items, 0), "data"), json_type_object));
+    json_object_put(items);
+    assert(extract_document(rule, "<script>{bad}</script>", "https://example.com/", &items, &next,
+                            error, sizeof(error)) < 0);
+    const char invalid_text[] = {'a', '\0', 'b'};
+    json_object_object_add(rule, "body", json_object_new_string_len(invalid_text, 3));
+    assert(request_validate(rule, error, sizeof(error)) < 0);
+    json_object_object_del(rule, "body");
+    json_object *headers = json_object_new_object();
+    json_object_object_add(headers, "X-Test", json_object_new_string_len(invalid_text, 3));
+    json_object_object_add(rule, "headers", headers);
+    assert(request_validate(rule, error, sizeof(error)) < 0);
+    json_object_object_del(rule, "headers");
+    json_object_put(rule);
     puts("core tests passed");
     return 0;
 }

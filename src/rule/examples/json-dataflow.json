@@ -1,0 +1,204 @@
+{
+  "schema_version": 2,
+  "name": "嵌套 JSON 查询与提交",
+  "entry": "lookup",
+  "vars": {
+    "site": "https://example.com"
+  },
+  "defaults": {
+    "timeout_seconds": 30,
+    "retries": 2,
+    "delay_ms": 300,
+    "max_bytes": 4194304
+  },
+  "max_steps": 1000,
+  "steps": [
+    {
+      "id": "lookup",
+      "type": "request",
+      "request": {
+        "url": "{{run.site}}/api/lookup",
+        "method": "GET"
+      },
+      "response_json": true,
+      "response_body": false,
+      "extract": {
+        "format": "json",
+        "fields": [
+          {
+            "name": "payload",
+            "selector": "/payload",
+            "type": "object",
+            "required": true
+          },
+          {
+            "name": "labels",
+            "selector": "/labels",
+            "type": "array",
+            "required": true
+          },
+          {
+            "name": "enabled",
+            "selector": "/enabled",
+            "type": "json",
+            "required": true
+          }
+        ]
+      },
+      "next": "prepare"
+    },
+    {
+      "id": "prepare",
+      "type": "transform",
+      "input": {
+        "account": {
+          "$ref": "/steps/lookup/items/0/payload/account"
+        },
+        "lines": {
+          "$ref": "/steps/lookup/items/0/payload/lines"
+        },
+        "labels": {
+          "$ref": "/steps/lookup/items/0/labels"
+        },
+        "enabled": {
+          "$ref": "/steps/lookup/items/0/enabled",
+          "default": true
+        },
+        "revision": {
+          "$ref": "/steps/lookup/response/json/revision",
+          "default": 0
+        }
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "account",
+          "lines",
+          "labels",
+          "enabled",
+          "revision"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "object",
+            "required": [
+              "id",
+              "profile"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "profile": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "sku",
+                "count"
+              ],
+              "properties": {
+                "sku": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer",
+                  "default": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer"
+          }
+        }
+      },
+      "operations": [
+        {
+          "op": "rename",
+          "from": "account",
+          "to": "customer"
+        }
+      ],
+      "next_input": {
+        "$ref": "/steps/prepare"
+      },
+      "retain_steps": [
+        "prepare"
+      ],
+      "next": "submit"
+    },
+    {
+      "id": "submit",
+      "type": "request",
+      "request": {
+        "url": "{{run.site}}/api/submit",
+        "method": "POST",
+        "body_origin": "{{run.site}}",
+        "query": {
+          "revision": {
+            "$ref": "/input/revision"
+          }
+        },
+        "json": {
+          "customer": {
+            "$ref": "/input/customer"
+          },
+          "lines": {
+            "$ref": "/input/lines"
+          },
+          "labels": {
+            "$ref": "/input/labels"
+          },
+          "enabled": {
+            "$ref": "/input/enabled"
+          },
+          "revision": {
+            "$ref": "/input/revision"
+          },
+          "displayName": {
+            "$ref": "/input/customer/profile/display.name"
+          },
+          "specialFlag": {
+            "$ref": "/input/customer/profile/a~1b~0"
+          }
+        }
+      },
+      "response_json": true,
+      "response_body": false,
+      "next": "save"
+    },
+    {
+      "id": "save",
+      "type": "emit",
+      "fields": {
+        "sent": {
+          "$ref": "/steps/prepare"
+        },
+        "result": {
+          "$ref": "/steps/submit/response/json"
+        },
+        "enabled": {
+          "$ref": "/input/enabled"
+        }
+      }
+    }
+  ]
+}

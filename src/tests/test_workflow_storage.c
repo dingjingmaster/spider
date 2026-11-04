@@ -90,7 +90,7 @@ static void groups_and_emit(void)
     json_object *children = parse("[{\"step_id\":\"a\",\"context\":{\"input\":1},\"record_key\":"
                                   "\"a\",\"branch_key\":\"alpha\"},{\"step_id\":\"b\",\"context\":{"
                                   "\"input\":2},\"record_key\":\"b\",\"branch_key\":\"beta\"}]");
-    assert(!wf_fork(&s, root, children, e, sizeof(e)));
+    assert(!wf_fork(&s, root, children, jg(root, "context"), e, sizeof(e)));
     json_object_put(children);
     json_object *a = claim(&s), *b = claim(&s);
     finish(&s, a, "{\"temporary\":1}",
@@ -127,7 +127,7 @@ static void failures_and_limits(void)
     json_object *root = claim(&s);
     json_object *children = parse("[{\"step_id\":\"a\",\"context\":{},\"branch_key\":\"a\"},{"
                                   "\"step_id\":\"b\",\"context\":{},\"branch_key\":\"b\"}]");
-    assert(wf_fork(&s, root, children, e, sizeof(e)) < 0 && *e);
+    assert(wf_fork(&s, root, children, jg(root, "context"), e, sizeof(e)) < 0 && *e);
     assert(scalar(&s, "SELECT count(*) FROM step_instances") == 1);
     assert(!wf_failure(&s, root, "fail", "limit", false, 0, e, sizeof(e)));
     assert(scalar(&s, "SELECT count(*) FROM runs WHERE status='failed'") == 1);
@@ -255,7 +255,7 @@ static void recovery(void)
     json_object *root = claim(&s),
                 *children = parse("[{\"step_id\":\"a\",\"context\":{},\"branch_key\":\"a\"},{"
                                   "\"step_id\":\"b\",\"context\":{},\"branch_key\":\"b\"}]");
-    assert(!wf_fork(&s, root, children, e, sizeof(e)));
+    assert(!wf_fork(&s, root, children, jg(root, "context"), e, sizeof(e)));
     json_object *a = claim(&s), *b = claim(&s);
     finish(&s, a, "{\"done\":1}", "[]", NULL);
     int64_t pending_id = id(b, "id");
@@ -310,7 +310,7 @@ static void concurrent_and_nested(void)
     json_object *root = claim(&s),
                 *children = parse("[{\"step_id\":\"a\",\"context\":{},\"branch_key\":\"a\"},{"
                                   "\"step_id\":\"b\",\"context\":{},\"branch_key\":\"b\"}]");
-    assert(!wf_fork(&s, root, children, e, sizeof(e)));
+    assert(!wf_fork(&s, root, children, jg(root, "context"), e, sizeof(e)));
     ClaimWorker workers[2] = {{.store = &s}, {.store = &s}};
     pthread_t threads[2];
     for (int i = 0; i < 2; i++)
@@ -319,7 +319,7 @@ static void concurrent_and_nested(void)
         assert(!pthread_join(threads[i], NULL));
     assert(workers[0].job && workers[1].job && !*workers[0].error && !*workers[1].error);
     assert(id(workers[0].job, "id") != id(workers[1].job, "id"));
-    assert(!wf_fork(&s, workers[0].job, NULL, e, sizeof(e)));
+    assert(!wf_fork(&s, workers[0].job, NULL, jg(workers[0].job, "context"), e, sizeof(e)));
     json_object *empty = claim(&s);
     assert(ji(empty, "phase", 0) == 1);
     json_object *out = wf_group_results(&s, id(empty, "id"), e, sizeof(e));
@@ -355,7 +355,7 @@ static void fanout_context_and_database_errors(void)
     json_object *root = claim(&s), *children = json_object_new_array();
     for (int i = 0; i < 1001; i++)
         json_object_array_add(children, parse("{\"step_id\":\"next\",\"context\":{}}"));
-    assert(wf_fork(&s, root, children, e, sizeof(e)) < 0 && *e);
+    assert(wf_fork(&s, root, children, jg(root, "context"), e, sizeof(e)) < 0 && *e);
     assert(scalar(&s, "SELECT count(*) FROM step_instances") == 1);
     json_object_put(children);
     json_object *large = json_object_new_object();
@@ -421,7 +421,7 @@ static void group_output_bound(void)
     json_object *root = claim(&s),
                 *children = parse("[{\"step_id\":\"a\",\"context\":{},\"branch_key\":\"a\"},{"
                                   "\"step_id\":\"b\",\"context\":{},\"branch_key\":\"b\"}]");
-    assert(!wf_fork(&s, root, children, e, sizeof(e)));
+    assert(!wf_fork(&s, root, children, jg(root, "context"), e, sizeof(e)));
     size_t bytes_count = 2200000;
     char *bytes = malloc(bytes_count + 1);
     assert(bytes);

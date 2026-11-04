@@ -44,6 +44,13 @@ int request_validate(json_object *r, char *e, size_t n)
 {
     if (!r || !json_object_is_type(r, json_type_object))
         return fail(e, n, "Request must be an object");
+    const char *texts[] = {"url", "body", "headers_origin", "body_origin", "method"};
+    for (size_t i = 0; i < sizeof(texts) / sizeof(*texts); i++) {
+        json_object *text = jg(r, texts[i]);
+        if (json_object_is_type(text, json_type_string) &&
+            strlen(json_object_get_string(text)) != (size_t)json_object_get_string_len(text))
+            return fail(e, n, "NUL byte in HTTP %s", texts[i]);
+    }
     const char *name = js(r, "name", "");
     if (!*name || strlen(name) > 160)
         return fail(e, n, "name must contain 1-160 bytes");
@@ -69,6 +76,7 @@ int request_validate(json_object *r, char *e, size_t n)
         json_object_object_foreach(headers, k, v)
         {
             if (!*k || strpbrk(k, ":\r\n") || !json_object_is_type(v, json_type_string) ||
+                strlen(json_object_get_string(v)) != (size_t)json_object_get_string_len(v) ||
                 strpbrk(json_object_get_string(v), "\r\n"))
                 return fail(e, n, "Invalid HTTP header");
         }
@@ -104,7 +112,8 @@ int request_validate(json_object *r, char *e, size_t n)
             return fail(e, n, "Field %s requires JSON Pointer syntax", key);
         const char *type = js(f, "type", "string");
         if (strcmp(type, "string") && strcmp(type, "number") && strcmp(type, "integer") &&
-            strcmp(type, "boolean"))
+            strcmp(type, "boolean") && strcmp(type, "object") && strcmp(type, "array") &&
+            strcmp(type, "json"))
             return fail(e, n, "Unknown type for field %s", key);
         const char *attr = js(f, "attribute", "");
         if (strlen(attr) > 80)
