@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "name": "接口分页",
+  "entry": "start",
+  "vars": {"start": "https://example.com/api/items?page=1"},
+  "max_steps": 1000,
+  "steps": [
+    {"id": "start", "type": "join", "fields": {"url": "{{run.start}}"}, "next_input": "{{steps.start}}", "next": "page"},
+    {
+      "id": "page", "type": "request", "request": {"url": "{{input.url}}"},
+      "extract": {"format": "json", "row_selector": "/items", "fields": [{"name": "id", "selector": "/id"}, {"name": "title", "selector": "/title"}], "next_selector": "/next"},
+      "next": "rows"
+    },
+    {"id": "rows", "type": "foreach", "items": "{{steps.page.items}}", "body": "save", "next": "more"},
+    {"id": "save", "type": "emit", "fields": {"id": "{{input.id}}", "title": "{{input.title}}"}},
+    {"id": "more", "type": "condition", "test": {"left": "{{steps.page.next_url}}", "op": "exists"}, "then": "advance"},
+    {"id": "advance", "type": "join", "fields": {"url": "{{steps.page.next_url}}"}, "next_input": "{{steps.advance}}", "next": "page"}
+  ]
+}

@@ -4,4 +4,7 @@
 #include "model/model.h"
 int artifact_download(App *app, int64_t run, json_object *rule, const char *url, cancel_fn cancel,
                       void *context, char *error, size_t cap);
+int artifact_download_session(App *app, int64_t run, json_object *rule, const char *url,
+                              cancel_fn cancel, void *context, HttpSession *session, char *error,
+                              size_t cap);
 #endif

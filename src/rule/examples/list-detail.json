@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "name": "列表与详情",
+  "entry": "list",
+  "vars": {"site": "https://example.com"},
+  "defaults": {"timeout_seconds": 30, "retries": 2, "delay_ms": 300, "max_bytes": 4194304},
+  "max_steps": 1000,
+  "steps": [
+    {
+      "id": "list", "type": "request",
+      "request": {"method": "GET", "url": "{{run.site}}/list"},
+      "extract": {
+        "format": "html", "row_selector": "a.detail",
+        "fields": [{"name": "url", "selector": "", "attribute": "href", "required": true}]
+      },
+      "next": "each"
+    },
+    {"id": "each", "type": "foreach", "items": "{{steps.list.items}}", "body": "detail"},
+    {
+      "id": "detail", "type": "request", "on_error": "skip",
+      "request": {"method": "GET", "url": "{{input.url}}"},
+      "extract": {"format": "html", "fields": [{"name": "title", "selector": "h1", "required": true}]},
+      "next": "save"
+    },
+    {"id": "save", "type": "emit", "fields": {"url": "{{steps.detail.response.url}}", "title": "{{steps.detail.items.0.title}}"}}
+  ]
+}

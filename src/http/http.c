@@ -57,7 +57,7 @@ void http_response_free(HttpResponse *r)
 }
 static int perform_once(json_object *rule, const char *url, FILE *file, cancel_fn cancel,
                         void *context, HttpResponse *r, char **redirect, bool post,
-                        bool send_headers, long timeout_ms, char *e, size_t n)
+                        bool send_headers, long timeout_ms, HttpSession *session, char *e, size_t n)
 {
     memset(r, 0, sizeof(*r));
     if (!url_valid(url))
@@ -65,6 +65,7 @@ static int perform_once(json_object *rule, const char *url, FILE *file, cancel_f
     CURL *c = curl_easy_init();
     if (!c)
         return fail(e, n, "Cannot initialize HTTP transfer");
+    session_attach(session, c);
     Transfer t = {.r = r,
                   .file = file,
                   .max = (size_t)ji(rule, "max_bytes", 4194304),
@@ -146,8 +147,8 @@ static int perform_once(json_object *rule, const char *url, FILE *file, cancel_f
         return fail(e, n, "Response contains binary data; use a download field");
     return 0;
 }
-int http_fetch(json_object *rule, const char *url, FILE *file, cancel_fn cancel, void *context,
-               HttpResponse *r, char *e, size_t n)
+int http_fetch_session(json_object *rule, const char *url, FILE *file, cancel_fn cancel,
+                       void *context, HttpSession *session, HttpResponse *r, char *e, size_t n)
 {
     memset(r, 0, sizeof(*r));
     char *current = strdup(url);
@@ -157,7 +158,10 @@ int http_fetch(json_object *rule, const char *url, FILE *file, cancel_fn cancel,
     int64_t deadline = now_ms() + (int64_t)ji(rule, "timeout_seconds", 30) * 1000;
     int rc = -1;
     for (int hop = 0; hop <= 5; hop++) {
-        bool same_origin = url_same_origin(js(rule, "url", ""), current);
+        bool same_origin = url_same_origin(js(rule, "url", ""), current) &&
+                           url_same_origin(js(rule, "body_origin", js(rule, "url", "")), current);
+        bool same_headers_origin =
+            url_same_origin(js(rule, "headers_origin", js(rule, "url", "")), current);
         if (post && !same_origin) {
             rc = fail(e, n, "Cross-origin POST body forwarding is blocked");
             break;
@@ -168,8 +172,8 @@ int http_fetch(json_object *rule, const char *url, FILE *file, cancel_fn cancel,
             break;
         }
         char *redirect = NULL;
-        rc = perform_once(rule, current, file, cancel, context, r, &redirect, post, same_origin,
-                          remaining, e, n);
+        rc = perform_once(rule, current, file, cancel, context, r, &redirect, post,
+                          same_headers_origin, remaining, session, e, n);
         if (rc != 1) {
             free(redirect);
             break;
@@ -187,5 +191,13 @@ int http_fetch(json_object *rule, const char *url, FILE *file, cancel_fn cancel,
             rc = fail(e, n, "Too many redirects");
     }
     free(current);
+    char session_error[SP_ERROR] = {0};
+    if (session_persist(session, session_error, sizeof(session_error)))
+        rc = fail(e, n, "%s", session_error);
     return rc;
+}
+int http_fetch(json_object *rule, const char *url, FILE *file, cancel_fn cancel, void *context,
+               HttpResponse *r, char *e, size_t n)
+{
+    return http_fetch_session(rule, url, file, cancel, context, NULL, r, e, n);
 }

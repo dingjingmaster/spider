@@ -1,10 +1,10 @@
 #include "storage.h"
+#include "rule/upgrade.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
 static const char *schema =
-    "PRAGMA foreign_keys=ON;PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;"
     "CREATE TABLE IF NOT EXISTS spiders(id INTEGER PRIMARY KEY,name TEXT NOT NULL,rule_json TEXT "
     "NOT NULL,version INTEGER NOT NULL DEFAULT 1,enabled INTEGER NOT NULL DEFAULT "
     "1,interval_seconds INTEGER NOT NULL DEFAULT 0,next_run INTEGER NOT NULL DEFAULT 0,deleted "
@@ -31,8 +31,51 @@ static const char *schema =
     "CREATE TABLE IF NOT EXISTS run_events(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL "
     "REFERENCES runs(id),level TEXT NOT NULL,message TEXT NOT NULL,created_at INTEGER NOT NULL);"
     "CREATE INDEX IF NOT EXISTS requests_queue ON requests(run_id,status,id);"
-    "CREATE INDEX IF NOT EXISTS items_run ON items(run_id,id);"
-    "PRAGMA user_version=1;";
+    "CREATE INDEX IF NOT EXISTS items_run ON items(run_id,id);";
+
+/* Rebuild the two v1 tables together: foreign keys are disabled only while opening,
+ * before this Store is visible to workers. Transaction rollback preserves v1. */
+static const char *migration_v2 =
+    "ALTER TABLE items RENAME TO items_v1;"
+    "ALTER TABLE requests RENAME TO requests_v1;"
+    "CREATE TABLE requests(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL REFERENCES runs(id),"
+    "url TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',attempts INTEGER NOT NULL DEFAULT 0,"
+    "error TEXT NOT NULL DEFAULT '',step_instance_id INTEGER,method TEXT,request_key TEXT);"
+    "INSERT INTO requests(id,run_id,url,status,attempts,error) SELECT "
+    "id,run_id,url,status,attempts,error FROM requests_v1;"
+    "CREATE UNIQUE INDEX requests_legacy_url ON requests(run_id,url) WHERE step_instance_id IS "
+    "NULL;"
+    "CREATE UNIQUE INDEX requests_workflow_key ON requests(run_id,request_key) WHERE request_key "
+    "IS NOT NULL;"
+    "CREATE TABLE items(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL REFERENCES runs(id),"
+    "request_id INTEGER REFERENCES requests(id),source_url TEXT NOT NULL DEFAULT '',data TEXT NOT "
+    "NULL,"
+    "created_at INTEGER NOT NULL,step_instance_id INTEGER,record_key TEXT,step_id "
+    "TEXT,UNIQUE(request_id,data));"
+    "INSERT INTO items(id,run_id,request_id,source_url,data,created_at) SELECT "
+    "id,run_id,request_id,source_url,data,created_at FROM items_v1;"
+    "DROP TABLE items_v1;DROP TABLE requests_v1;"
+    "CREATE UNIQUE INDEX items_workflow_record ON items(run_id,record_key,step_id) WHERE "
+    "step_instance_id IS NOT NULL;"
+    "CREATE INDEX requests_queue ON requests(run_id,status,id);CREATE INDEX items_run ON "
+    "items(run_id,id);"
+    "CREATE TABLE step_instances(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL REFERENCES "
+    "runs(id),"
+    "step_id TEXT NOT NULL,parent_id INTEGER REFERENCES step_instances(id),branch_key TEXT NOT "
+    "NULL DEFAULT '',"
+    "record_key TEXT NOT NULL DEFAULT '',context TEXT NOT NULL,output TEXT,status TEXT NOT NULL "
+    "DEFAULT 'queued',"
+    "phase INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,pending INTEGER NOT NULL "
+    "DEFAULT 0,"
+    "terminal INTEGER NOT NULL DEFAULT 0,ready_at INTEGER NOT NULL DEFAULT 0,error TEXT NOT NULL "
+    "DEFAULT '',"
+    "created_at INTEGER NOT NULL,finished_at INTEGER);"
+    "CREATE INDEX workflow_ready ON step_instances(status,ready_at,id);"
+    "CREATE INDEX workflow_run ON step_instances(run_id,status);"
+    "CREATE INDEX workflow_parent ON step_instances(parent_id);"
+    "CREATE TABLE sessions(run_id INTEGER PRIMARY KEY REFERENCES runs(id),cookies TEXT NOT NULL "
+    "DEFAULT '');"
+    "PRAGMA user_version=2;";
 
 static sqlite3_stmt *prepare(Store *s, const char *sql)
 {
@@ -58,7 +101,8 @@ static json_object *row_json(sqlite3_stmt *q)
             v = json_object_new_double(sqlite3_column_double(q, i));
         else if (type != SQLITE_NULL) {
             const char *str = (const char *)sqlite3_column_text(q, i);
-            if (!strcmp(key, "rule") || !strcmp(key, "snapshot") || !strcmp(key, "data"))
+            if (!strcmp(key, "rule") || !strcmp(key, "snapshot") || !strcmp(key, "data") ||
+                !strcmp(key, "context") || !strcmp(key, "output"))
                 v = json_tokener_parse(str);
             else
                 v = json_object_new_string(str);
@@ -70,6 +114,95 @@ static json_object *row_json(sqlite3_stmt *q)
 static int exec_locked(Store *s, const char *sql)
 {
     return sqlite3_exec(s->db, sql, NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+/* The definition upgrade and old-run retirement commit together. History is
+ * deliberately never interpreted or rewritten. */
+static int migrate_v3(Store *s, char *e, size_t n)
+{
+    sqlite3_stmt *q = prepare(s, "SELECT id,version,rule_json FROM spiders ORDER BY id");
+    json_object *rows = json_object_new_array();
+    if (!q) {
+        json_object_put(rows);
+        return -1;
+    }
+    int result;
+    while ((result = sqlite3_step(q)) == SQLITE_ROW)
+        json_object_array_add(rows, row_json(q));
+    sqlite3_finalize(q);
+    if (result != SQLITE_DONE) {
+        json_object_put(rows);
+        return -1;
+    }
+    int rc = 0;
+    for (size_t i = 0; !rc && i < json_object_array_length(rows); i++) {
+        json_object *entry = json_object_array_get_idx(rows, i);
+        int64_t spider = json_object_get_int64(jg(entry, "id"));
+        char reason[SP_ERROR] = "";
+        json_object *old = json_parse(js(entry, "rule_json", ""), reason, sizeof(reason));
+        if (!old) {
+            rc = fail(e, n, "SQLite v3 migration: spider %lld has invalid rule JSON: %s",
+                      (long long)spider, reason);
+            break;
+        }
+        if (ji(old, "schema_version", 1) == 2) {
+            json_object_put(old);
+            continue;
+        }
+        json_object *upgraded = rule_upgrade_v1(old, reason, sizeof(reason));
+        json_object_put(old);
+        if (!upgraded) {
+            rc = fail(e, n, "SQLite v3 migration: cannot upgrade spider %lld: %s",
+                      (long long)spider, reason);
+            break;
+        }
+        int64_t version = json_object_get_int64(jg(entry, "version"));
+        if (version == INT64_MAX) {
+            json_object_put(upgraded);
+            rc = fail(e, n, "SQLite v3 migration: spider version overflow");
+            break;
+        }
+        version++;
+        int64_t timestamp = now_ms();
+        const char *raw = json_object_to_json_string_ext(upgraded, JSON_C_TO_STRING_PLAIN);
+        q = prepare(s, "UPDATE spiders SET rule_json=?1,version=?2,updated_at=?3 WHERE id=?4");
+        if (!q) {
+            json_object_put(upgraded);
+            rc = -1;
+            break;
+        }
+        txt(q, 1, raw);
+        sqlite3_bind_int64(q, 2, version);
+        sqlite3_bind_int64(q, 3, timestamp);
+        sqlite3_bind_int64(q, 4, spider);
+        rc = sqlite3_step(q) == SQLITE_DONE ? 0 : -1;
+        sqlite3_finalize(q);
+        q = NULL;
+        if (!rc) {
+            q = prepare(s, "INSERT INTO rule_versions(spider_id,version,rule_json,created_at) "
+                           "VALUES(?,?,?,?)");
+            if (!q)
+                rc = -1;
+            else {
+                sqlite3_bind_int64(q, 1, spider);
+                sqlite3_bind_int64(q, 2, version);
+                txt(q, 3, raw);
+                sqlite3_bind_int64(q, 4, timestamp);
+                rc = sqlite3_step(q) == SQLITE_DONE ? 0 : -1;
+            }
+            sqlite3_finalize(q);
+            q = NULL;
+        }
+        json_object_put(upgraded);
+    }
+    json_object_put(rows);
+    if (!rc)
+        rc = exec_locked(
+            s,
+            "UPDATE runs SET status='failed',error='SQLite v3 migration: unfinished legacy run was "
+            "not replayed',"
+            "finished_at=strftime('%s','now')*1000 WHERE status IN('queued','running') "
+            "AND coalesce(json_extract(snapshot,'$.schema_version'),1)<>2;PRAGMA user_version=3;");
+    return rc;
 }
 int store_open(Store *s, const char *path, char *e, size_t n)
 {
@@ -88,21 +221,40 @@ int store_open(Store *s, const char *path, char *e, size_t n)
     if (q && sqlite3_step(q) == SQLITE_ROW)
         version = sqlite3_column_int(q, 0);
     sqlite3_finalize(q);
-    if (version > 1 || exec_locked(s, schema)) {
-        fail(e, n, "Unsupported or invalid SQLite schema: %s", sqlite3_errmsg(s->db));
+    if (e && n)
+        *e = 0;
+    if (version > 3) {
+        fail(e, n, "Unsupported SQLite schema version: %d", version);
         store_close(s);
         return -1;
     }
-    if (exec_locked(s, "BEGIN IMMEDIATE;UPDATE runs SET "
-                       "status='cancelled',finished_at=strftime('%s','now')*1000 WHERE status "
-                       "IN('queued','running') AND cancel_requested=1;UPDATE requests SET "
-                       "status='queued' WHERE status='running';UPDATE runs SET status='queued' "
-                       "WHERE status='running';COMMIT;")) {
-        fail(e, n, "Database recovery failed");
-        store_close(s);
-        return -1;
-    }
+    /* foreign_keys must be disabled before BEGIN for the v1 table rebuild.
+     * Only this unopened Store can access the connection during migration. */
+    if (exec_locked(s,
+                    "PRAGMA foreign_keys=OFF;PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;") ||
+        exec_locked(s, "BEGIN IMMEDIATE") || exec_locked(s, schema) ||
+        (version < 2 && exec_locked(s, migration_v2)) || (version < 3 && migrate_v3(s, e, n)))
+        goto failed;
+    if (exec_locked(s, "UPDATE runs SET status='cancelled',finished_at=strftime('%s','now')*1000 "
+                       "WHERE status IN('queued','running') AND cancel_requested=1;"
+                       "UPDATE runs SET status='queued' WHERE status='running';"
+                       "UPDATE step_instances SET status='queued' WHERE status='running' "
+                       "AND run_id IN(SELECT id FROM runs WHERE status='queued');"
+                       "UPDATE step_instances SET status='cancelled' WHERE status "
+                       "IN('queued','running','waiting') "
+                       "AND run_id IN(SELECT id FROM runs WHERE status IN('cancelled','failed'));"
+                       "DELETE FROM sessions WHERE run_id IN(SELECT id FROM runs "
+                       "WHERE status IN('succeeded','partial','failed','cancelled'));"))
+        goto failed;
+    if (exec_locked(s, "COMMIT") || exec_locked(s, "PRAGMA foreign_keys=ON"))
+        goto failed;
     return 0;
+failed:
+    if (!e || !n || !*e)
+        fail(e, n, "SQLite migration/recovery failed: %s", sqlite3_errmsg(s->db));
+    exec_locked(s, "ROLLBACK");
+    store_close(s);
+    return -1;
 }
 void store_close(Store *s)
 {
@@ -245,200 +397,32 @@ int64_t store_start_run(Store *s, int64_t id, char *e, size_t n)
     pthread_mutex_unlock(&s->mutex);
     return run;
 }
-json_object *store_claim_run(Store *s)
-{
-    pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q = prepare(
-        s,
-        "UPDATE runs SET status='running',started_at=coalesce(started_at,?1) WHERE id=(SELECT id "
-        "FROM runs WHERE status='queued' AND cancel_requested=0 ORDER BY id LIMIT 1) RETURNING *");
-    json_object *out = NULL;
-    if (q) {
-        sqlite3_bind_int64(q, 1, now_ms());
-        if (sqlite3_step(q) == SQLITE_ROW)
-            out = row_json(q);
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&s->mutex);
-    return out;
-}
-int store_finish_run(Store *s, int64_t run, const char *status, const char *error)
-{
-    pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q = prepare(s, "UPDATE runs SET status=CASE WHEN cancel_requested=1 THEN "
-                                 "'cancelled' ELSE ?2 END,error=?3,finished_at=?4 WHERE id=?1");
-    int rc = -1;
-    if (q) {
-        sqlite3_bind_int64(q, 1, run);
-        txt(q, 2, status);
-        txt(q, 3, error);
-        sqlite3_bind_int64(q, 4, now_ms());
-        rc = sqlite3_step(q) == SQLITE_DONE ? 0 : -1;
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&s->mutex);
-    return rc;
-}
 int store_cancel_run(Store *s, int64_t run)
 {
     pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q =
-        prepare(s, "UPDATE runs SET cancel_requested=1,status=CASE WHEN status='queued' THEN "
-                   "'cancelled' ELSE status END,finished_at=CASE WHEN status='queued' THEN ?2 ELSE "
-                   "finished_at END WHERE id=?1 AND status IN('queued','running')");
-    int rc = -1;
-    if (q) {
-        sqlite3_bind_int64(q, 1, run);
-        sqlite3_bind_int64(q, 2, now_ms());
-        if (sqlite3_step(q) == SQLITE_DONE && sqlite3_changes(s->db))
-            rc = 0;
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&s->mutex);
-    return rc;
-}
-bool store_cancelled(Store *s, int64_t run)
-{
-    pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q = prepare(s, "SELECT cancel_requested FROM runs WHERE id=?");
-    bool result = true;
-    if (q) {
-        sqlite3_bind_int64(q, 1, run);
-        if (sqlite3_step(q) == SQLITE_ROW)
-            result = sqlite3_column_int(q, 0) != 0;
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&s->mutex);
-    return result;
-}
-int store_event(Store *s, int64_t run, const char *level, const char *message)
-{
-    pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q =
-        prepare(s, "INSERT INTO run_events(run_id,level,message,created_at) VALUES(?,?,?,?)");
-    int rc = -1;
-    if (q) {
-        sqlite3_bind_int64(q, 1, run);
-        txt(q, 2, level);
-        txt(q, 3, message);
-        sqlite3_bind_int64(q, 4, now_ms());
-        rc = sqlite3_step(q) == SQLITE_DONE ? 0 : -1;
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&s->mutex);
-    return rc;
-}
-int64_t store_enqueue(Store *s, int64_t run, const char *url)
-{
-    pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q = prepare(s, "INSERT INTO requests(run_id,url) VALUES(?,?) ON "
-                                 "CONFLICT(run_id,url) DO NOTHING RETURNING id");
-    int64_t id = -1;
-    if (q) {
-        sqlite3_bind_int64(q, 1, run);
-        txt(q, 2, url);
-        int rc = sqlite3_step(q);
-        if (rc == SQLITE_ROW)
-            id = sqlite3_column_int64(q, 0);
-        else if (rc == SQLITE_DONE)
-            id = 0;
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&s->mutex);
-    return id;
-}
-json_object *store_claim_request(Store *s, int64_t run, char *error, size_t cap)
-{
-    pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q = prepare(
-        s, "UPDATE requests SET status='running',attempts=attempts+1 WHERE id=(SELECT id FROM "
-           "requests WHERE run_id=? AND status='queued' ORDER BY id LIMIT 1) RETURNING *");
-    json_object *out = NULL;
-    if (error && cap)
-        error[0] = 0;
-    if (q) {
-        sqlite3_bind_int64(q, 1, run);
-        int result = sqlite3_step(q);
-        if (result == SQLITE_ROW)
-            out = row_json(q);
-        else if (result != SQLITE_DONE)
-            fail(error, cap, "Cannot claim request: %s", sqlite3_errmsg(s->db));
-    } else {
-        fail(error, cap, "Cannot prepare request claim: %s", sqlite3_errmsg(s->db));
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&s->mutex);
-    return out;
-}
-int store_request_status(Store *s, int64_t request, const char *status, const char *error)
-{
-    pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q = prepare(s, "UPDATE requests SET status=?,error=? WHERE id=?");
-    int rc = -1;
-    if (q) {
-        txt(q, 1, status);
-        txt(q, 2, error);
-        sqlite3_bind_int64(q, 3, request);
-        rc = sqlite3_step(q) == SQLITE_DONE ? 0 : -1;
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&s->mutex);
-    return rc;
-}
-int store_commit_page(Store *s, int64_t run, int64_t req, const char *url, json_object *items,
-                      const char *next)
-{
-    pthread_mutex_lock(&s->mutex);
     sqlite3_stmt *q = NULL;
-    int rc = -1, added = 0;
+    int rc = -1;
     if (exec_locked(s, "BEGIN IMMEDIATE"))
         goto done;
-    q = prepare(s, "INSERT INTO items(run_id,request_id,source_url,data,created_at) "
-                   "VALUES(?,?,?,?,?) ON CONFLICT(request_id,data) DO NOTHING");
-    if (!q)
-        goto rollback;
-    for (size_t i = 0; i < json_object_array_length(items); i++) {
-        sqlite3_reset(q);
-        sqlite3_bind_int64(q, 1, run);
-        sqlite3_bind_int64(q, 2, req);
-        txt(q, 3, url);
-        txt(q, 4,
-            json_object_to_json_string_ext(json_object_array_get_idx(items, i),
-                                           JSON_C_TO_STRING_PLAIN));
-        sqlite3_bind_int64(q, 5, now_ms());
-        if (sqlite3_step(q) != SQLITE_DONE)
-            goto rollback;
-        added += sqlite3_changes(s->db);
-    }
-    sqlite3_finalize(q);
-    q = prepare(s, "UPDATE requests SET status='succeeded',error='' WHERE id=?");
-    if (!q)
-        goto rollback;
-    sqlite3_bind_int64(q, 1, req);
-    if (sqlite3_step(q) != SQLITE_DONE)
-        goto rollback;
-    sqlite3_finalize(q);
-    q = prepare(s, "UPDATE runs SET pages=pages+1,item_count=item_count+?2 WHERE id=?1");
+    q = prepare(s, "UPDATE runs SET cancel_requested=1,status='cancelled',finished_at=?2 "
+                   "WHERE id=?1 AND status IN('queued','running')");
     if (!q)
         goto rollback;
     sqlite3_bind_int64(q, 1, run);
-    sqlite3_bind_int(q, 2, added);
+    sqlite3_bind_int64(q, 2, now_ms());
+    if (sqlite3_step(q) != SQLITE_DONE || !sqlite3_changes(s->db))
+        goto rollback;
+    sqlite3_finalize(q);
+    q = prepare(s, "UPDATE step_instances SET status='cancelled' WHERE run_id=?1 "
+                   "AND status IN('queued','running','waiting') AND EXISTS(SELECT 1 FROM runs "
+                   "WHERE id=?1 AND status='cancelled')");
+    if (!q)
+        goto rollback;
+    sqlite3_bind_int64(q, 1, run);
     if (sqlite3_step(q) != SQLITE_DONE)
         goto rollback;
     sqlite3_finalize(q);
     q = NULL;
-    if (next) {
-        q = prepare(
-            s, "INSERT INTO requests(run_id,url) VALUES(?,?) ON CONFLICT(run_id,url) DO NOTHING");
-        if (!q)
-            goto rollback;
-        sqlite3_bind_int64(q, 1, run);
-        txt(q, 2, next);
-        if (sqlite3_step(q) != SQLITE_DONE)
-            goto rollback;
-        sqlite3_finalize(q);
-        q = NULL;
-    }
     if (exec_locked(s, "COMMIT"))
         goto rollback;
     rc = 0;
@@ -455,7 +439,9 @@ int64_t store_add_artifact(Store *s, int64_t run, const char *url, const char *p
 {
     pthread_mutex_lock(&s->mutex);
     sqlite3_stmt *q =
-        prepare(s, "INSERT INTO artifacts(run_id,url,path,sha256,bytes) VALUES(?,?,?,?,?) ON "
+        prepare(s, "INSERT INTO artifacts(run_id,url,path,sha256,bytes) SELECT ?1,?2,?3,?4,?5 "
+                   "WHERE EXISTS(SELECT 1 FROM runs WHERE id=?1 AND "
+                   "status='running' AND cancel_requested=0) ON "
                    "CONFLICT(run_id,url) DO UPDATE SET "
                    "path=excluded.path,sha256=excluded.sha256,bytes=excluded.bytes RETURNING id");
     int64_t id = -1;

@@ -1,5 +1,5 @@
 #include "web.h"
-#include "engine/engine.h"
+#include "engine/workflow.h"
 #include "rule/rule.h"
 #include <civetweb.h>
 #include <errno.h>
@@ -107,6 +107,22 @@ static void csv_cell(FILE *f, const char *s)
     }
     fputc('"', f);
 }
+static bool csv_fields_valid(json_object *fields)
+{
+    if (!fields || !json_object_is_type(fields, json_type_array) ||
+        !json_object_array_length(fields))
+        return false;
+    for (size_t i = 0; i < json_object_array_length(fields); i++) {
+        json_object *field = json_object_array_get_idx(fields, i);
+        if (!field || !json_object_is_type(field, json_type_object))
+            return false;
+        json_object *name = jg(field, "name");
+        if (!name || !json_object_is_type(name, json_type_string) ||
+            !*json_object_get_string(name))
+            return false;
+    }
+    return true;
+}
 static int export_run(struct mg_connection *c, App *app, int64_t id, bool csv)
 {
     json_object *run = one_row(app, "SELECT snapshot FROM runs WHERE id=?", id);
@@ -119,7 +135,46 @@ static int export_run(struct mg_connection *c, App *app, int64_t id, bool csv)
         json_object_put(run);
         return error_json(c, 500, "Cannot create export");
     }
-    json_object *fields = jg(jg(run, "snapshot"), "fields");
+    pthread_mutex_lock(&app->store.mutex);
+    json_object *snapshot = jg(run, "snapshot");
+    json_object *fields = jg(snapshot, "fields"), *derived_fields = NULL;
+    bool explicit_fields = json_object_object_get_ex(snapshot, "fields", &fields);
+    if (csv && ji(snapshot, "schema_version", 1) == 2 && explicit_fields &&
+        !csv_fields_valid(fields)) {
+        pthread_mutex_unlock(&app->store.mutex);
+        fclose(f);
+        free(body);
+        json_object_put(run);
+        return error_json(c, 422,
+                          "Workflow fields must be a nonempty array of objects with name strings");
+    }
+    /* Explicit export fields select/order columns; otherwise infer emitted record keys. */
+    if (csv && ji(snapshot, "schema_version", 1) == 2 && !explicit_fields) {
+        derived_fields = json_object_new_array();
+        sqlite3_stmt *columns = NULL;
+        int cr = sqlite3_prepare_v2(app->store.db,
+            "SELECT DISTINCT json_each.key FROM items,json_each(items.data) "
+            "WHERE items.run_id=? ORDER BY json_each.key", -1, &columns, NULL);
+        if (cr == SQLITE_OK) {
+            sqlite3_bind_int64(columns, 1, id);
+            while ((cr = sqlite3_step(columns)) == SQLITE_ROW) {
+                json_object *field = json_object_new_object();
+                json_object_object_add(field, "name", json_object_new_string(
+                    (const char *)sqlite3_column_text(columns, 0)));
+                json_object_array_add(derived_fields, field);
+            }
+        }
+        sqlite3_finalize(columns);
+        if (cr != SQLITE_DONE) {
+            pthread_mutex_unlock(&app->store.mutex);
+            fclose(f);
+            free(body);
+            json_object_put(derived_fields);
+            json_object_put(run);
+            return error_json(c, 500, "Cannot derive export columns");
+        }
+        fields = derived_fields;
+    }
     if (csv) {
         for (size_t i = 0; i < json_object_array_length(fields); i++) {
             if (i)
@@ -129,7 +184,6 @@ static int export_run(struct mg_connection *c, App *app, int64_t id, bool csv)
         fputs("\r\n", f);
     } else
         fputc('[', f);
-    pthread_mutex_lock(&app->store.mutex);
     sqlite3_stmt *q = NULL;
     int rc = sqlite3_prepare_v2(app->store.db, "SELECT data FROM items WHERE run_id=? ORDER BY id",
                                 -1, &q, NULL);
@@ -166,6 +220,8 @@ static int export_run(struct mg_connection *c, App *app, int64_t id, bool csv)
     if (!csv)
         fputc(']', f);
     int io = fclose(f);
+    if (derived_fields)
+        json_object_put(derived_fields);
     json_object_put(run);
     if (io || too_large || rc != SQLITE_DONE) {
         free(body);
@@ -217,11 +273,12 @@ static int handler(struct mg_connection *c, void *context)
             json_object *rule = read_json(c, e, sizeof(e));
             if (!rule)
                 return error_json(c, 400, e);
-            if (rule_validate(rule, e, sizeof(e))) {
+            json_object *definition = jg(rule, "rule");
+            if (rule_validate(definition ? definition : rule, e, sizeof(e))) {
                 json_object_put(rule);
                 return error_json(c, 400, e);
             }
-            json_object *out = engine_preview(app, rule, e, sizeof(e));
+            json_object *out = workflow_preview(app, rule, e, sizeof(e));
             json_object_put(rule);
             return out ? send_json(c, 200, out) : error_json(c, 422, e);
         }
@@ -307,6 +364,28 @@ static int handler(struct mg_connection *c, void *context)
                          "id>%lld ORDER BY id LIMIT 1000",
                          (long long)after);
                 return query_reply(c, app, sql, id);
+            }
+            if (!strcmp(tail, "/steps") && get)
+                return query_reply(c, app,
+                                   "SELECT id,run_id,step_id,parent_id,branch_key,record_key,"
+                                   "status,attempts,error,phase FROM step_instances "
+                                   "WHERE run_id=? ORDER BY id DESC LIMIT 1000", id);
+            if (!strncmp(tail, "/steps/", 7) && get) {
+                const char *start = tail + 7;
+                char *end;
+                errno = 0;
+                int64_t instance = strtoll(start, &end, 10);
+                if (*start >= '0' && *start <= '9' && !errno && !*end && instance > 0) {
+                    char sql[320];
+                    snprintf(sql, sizeof(sql),
+                             "SELECT id,run_id,step_id,parent_id,branch_key,record_key,"
+                             "status,attempts,context,output,error,phase FROM step_instances "
+                             "WHERE run_id=? AND id=%" PRId64, instance);
+                    json_object *j = one_row(app, sql, id);
+                    return j ? send_json(c, 200, j)
+                             : error_json(c, 404, "Step instance not found in this run");
+                }
+                return error_json(c, 404, "Step instance not found in this run");
             }
             if (!strcmp(tail, "/events") && get)
                 return query_reply(c, app,

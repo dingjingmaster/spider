@@ -5,8 +5,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
-int artifact_download(App *app, int64_t run, json_object *rule, const char *url, cancel_fn cancel,
-                      void *ctx, char *e, size_t n)
+int artifact_download_session(App *app, int64_t run, json_object *rule, const char *url,
+                              cancel_fn cancel, void *ctx, HttpSession *session, char *e, size_t n)
 {
     json_object *existing =
         store_query(&app->store, "SELECT url,path FROM artifacts WHERE run_id=?", run, e, n);
@@ -34,7 +34,7 @@ int artifact_download(App *app, int64_t run, json_object *rule, const char *url,
         return fail(e, n, "Cannot open download stream");
     }
     HttpResponse response = {0};
-    int rc = http_fetch(rule, url, f, cancel, ctx, &response, e, n);
+    int rc = http_fetch_session(rule, url, f, cancel, ctx, session, &response, e, n);
     if (fflush(f) || ferror(f) || fsync(fd))
         rc = fail(e, n, "Cannot persist download");
     if (fclose(f))
@@ -56,10 +56,14 @@ int artifact_download(App *app, int64_t run, json_object *rule, const char *url,
         http_response_free(&response);
         return fail(e, n, "Download path too long");
     }
+    /* Publication, registration and rollback form one ownership boundary.
+     * Downloads run concurrently, but no rollback may remove a peer's file. */
+    pthread_mutex_lock(&app->artifact_mutex);
     bool existed = access(final, F_OK) == 0;
     if (rename(temp, final)) {
         unlink(temp);
         http_response_free(&response);
+        pthread_mutex_unlock(&app->artifact_mutex);
         return fail(e, n, "Cannot finalize download");
     }
     int64_t id = store_add_artifact(&app->store, run, url, final, hash, (int64_t)response.size);
@@ -67,7 +71,14 @@ int artifact_download(App *app, int64_t run, json_object *rule, const char *url,
     if (id < 0) {
         if (!existed)
             unlink(final);
+        pthread_mutex_unlock(&app->artifact_mutex);
         return fail(e, n, "Cannot register download in SQLite");
     }
+    pthread_mutex_unlock(&app->artifact_mutex);
     return 0;
+}
+int artifact_download(App *app, int64_t run, json_object *rule, const char *url, cancel_fn cancel,
+                      void *ctx, char *e, size_t n)
+{
+    return artifact_download_session(app, run, rule, url, cancel, ctx, NULL, e, n);
 }

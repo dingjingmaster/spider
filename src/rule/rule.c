@@ -1,4 +1,5 @@
 #include "rule.h"
+#include "workflow.h"
 #include <lexbor/css/parser.h>
 #include <lexbor/css/selectors/selectors.h>
 #include <lexbor/css/selectors/selector.h>
@@ -34,11 +35,24 @@ int rule_validate(json_object *r, char *e, size_t n)
 {
     if (!r || !json_object_is_type(r, json_type_object))
         return fail(e, n, "Rule must be an object");
+    if (!json_object_is_type(jg(r, "schema_version"), json_type_int) ||
+        ji(r, "schema_version", 0) != 2)
+        return fail(e, n, "Only workflow schema_version 2 is supported");
+    return flow_validate(r, e, n);
+}
+int request_validate(json_object *r, char *e, size_t n)
+{
+    if (!r || !json_object_is_type(r, json_type_object))
+        return fail(e, n, "Request must be an object");
     const char *name = js(r, "name", "");
     if (!*name || strlen(name) > 160)
         return fail(e, n, "name must contain 1-160 bytes");
     if (!url_valid(js(r, "url", "")))
         return fail(e, n, "url must be http(s), without embedded credentials");
+    if (jg(r, "headers_origin") && !url_valid(js(r, "headers_origin", "")))
+        return fail(e, n, "headers_origin must be an HTTP(S) URL");
+    if (jg(r, "body_origin") && !url_valid(js(r, "body_origin", "")))
+        return fail(e, n, "body_origin must be an HTTP(S) URL");
     const char *method = js(r, "method", "GET");
     if (strcmp(method, "GET") && strcmp(method, "POST"))
         return fail(e, n, "method must be GET or POST");

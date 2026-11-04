@@ -20,7 +20,8 @@ int main(void)
                               "\",\"format\":\"html\",\"row_selector\":\".row\",\"fields\":[{"
                               "\"name\":\"title\",\"selector\":\"h2\",\"required\":true},{\"name\":"
                               "\"price\",\"selector\":\"b\",\"type\":\"number\"}]}");
-    assert(rule_validate(rule, error, sizeof(error)) == 0);
+    assert(rule_validate(rule, error, sizeof(error)) < 0); /* only workflows are public */
+    assert(request_validate(rule, error, sizeof(error)) == 0);
     json_object *items = NULL;
     char *next = NULL;
     const char *html = "<div class='row'><h2>A &amp; B</h2><b>12.5</b></div><div "
@@ -37,13 +38,13 @@ int main(void)
     assert(extract_document(rule, "<div class='row'><b>2</b></div>", "http://localhost/", &items,
                             &next, error, sizeof(error)) < 0);
     json_object_object_add(rule, "row_selector", json_object_new_string("["));
-    assert(rule_validate(rule, error, sizeof(error)) < 0);
+    assert(request_validate(rule, error, sizeof(error)) < 0);
     json_object_put(rule);
     rule =
         parse("{\"name\":\"json\",\"url\":\"https://example.com/"
               "\",\"format\":\"json\",\"row_selector\":\"/"
               "rows\",\"fields\":[{\"name\":\"title\",\"selector\":\"/name\",\"required\":true}]}");
-    assert(rule_validate(rule, error, sizeof(error)) == 0);
+    assert(request_validate(rule, error, sizeof(error)) == 0);
     assert(extract_document(rule, "{\"rows\":[{\"name\":\"One\"},{\"name\":\"Two\"}]}",
                             "https://example.com/", &items, &next, error, sizeof(error)) == 0);
     assert(json_object_array_length(items) == 2);
