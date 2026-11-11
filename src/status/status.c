@@ -102,14 +102,14 @@ json_object *status_events(Status *s, int64_t id, char *e, size_t n)
 {
     return store_events(s->store, id, e, n);
 }
-json_object *status_library(Status *s, const char *media_type, int page, int page_size, char *e,
-                            size_t n)
+json_object *status_library(Status *s, const char *media_type, const char *status, int page,
+                            int page_size, char *e, size_t n)
 {
     if (!s) {
         fail(e, n, "Status unavailable");
         return NULL;
     }
-    return store_library_page(s->store, media_type, page, page_size, e, n);
+    return store_library_page(s->store, media_type, status, page, page_size, e, n);
 }
 json_object *status_steps(Status *s, int64_t id, char *e, size_t n)
 {

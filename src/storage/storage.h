@@ -57,8 +57,9 @@ int store_download_finish(Store *, const char *download_url, const char *status,
 int store_download_decide(Store *, const char *download_url, const char *decision, int curated,
                           char *error, size_t cap);
 json_object *store_download_summary(Store *, const char *spider_code, char *error, size_t cap);
-json_object *store_library_page(Store *, const char *media_type, int page, int page_size,
-                                char *error, size_t cap);
+json_object *store_library_page(Store *, const char *media_type, const char *status, int page,
+                                int page_size, char *error, size_t cap);
+int store_download_recover(Store *, const char *spider_code, char *error, size_t cap);
 bool store_download_sha1_exists(Store *, const char *sha1, const char *item_identifier,
                                 const char *logical_key, char *error, size_t cap);
 int wf_initialize_run(Store *, int64_t, char *, size_t);

@@ -401,9 +401,11 @@ static void test_library_pages(void)
     assert(!store_download_sha1_exists(s, "a", "vol-1", "a", error, sizeof(error)));
     assert(store_download_sha1_exists(s, "a", "vol-1", "b", error, sizeof(error)));
     assert(!store_download_sha1_exists(s, "missing", "vol-1", "a", error, sizeof(error)));
+    json_object *all = store_download_queue(s, "sp", "music", 0, 0, 1, error, sizeof(error));
+    assert(all && json_object_array_length(all) == 2);
+    json_object_put(all);
     json_object *part0 = store_download_queue(s, "sp", "music", 100, 0, 2, error,
-                                              sizeof(error));
-    json_object *part1 = store_download_queue(s, "sp", "music", 100, 1, 2, error,
+                                              sizeof(error));    json_object *part1 = store_download_queue(s, "sp", "music", 100, 1, 2, error,
                                               sizeof(error));
     assert(part0 && json_object_array_length(part0) == 1);
     assert(part1 && json_object_array_length(part1) == 1);
@@ -431,7 +433,7 @@ static void test_library_pages(void)
     json_object_put(source);
     json_object_put(items);
 
-    json_object *page = store_library_page(s, "music", 1, 1, error, sizeof(error));
+    json_object *page = store_library_page(s, "music", "", 1, 1, error, sizeof(error));
     assert(page);
     assert(ji(page, "total", 0) == 2);
     assert(ji(page, "pages", 0) == 2);
@@ -441,18 +443,25 @@ static void test_library_pages(void)
     assert(!strcmp(js(json_object_array_get_idx(rows, 0), "title", ""), "Title B"));
     json_object_put(page);
 
-    page = store_library_page(s, "music", 2, 1, error, sizeof(error));
+    page = store_library_page(s, "music", "", 2, 1, error, sizeof(error));
     assert(page && ji(page, "page", 0) == 2);
     rows = jg(page, "items");
     assert(rows && json_object_array_length(rows) == 1);
     assert(!strcmp(js(json_object_array_get_idx(rows, 0), "title", ""), "Title A"));
     json_object_put(page);
 
-    page = store_library_page(s, "music", 3, 1, error, sizeof(error));
+    page = store_library_page(s, "music", "", 3, 1, error, sizeof(error));
     assert(page && ji(page, "page", 0) == 2);
     json_object_put(page);
 
-    page = store_library_page(s, "novel", 1, 20, error, sizeof(error));
+    page = store_library_page(s, "music", "pending", 1, 20, error, sizeof(error));
+    assert(page && ji(page, "total", 0) == 2);
+    json_object_put(page);
+    page = store_library_page(s, "music", "downloaded", 1, 20, error, sizeof(error));
+    assert(page && ji(page, "total", 0) == 0);
+    json_object_put(page);
+
+    page = store_library_page(s, "novel", "", 1, 20, error, sizeof(error));
     assert(page && ji(page, "total", 0) == 1);
     rows = jg(page, "items");
     assert(rows && json_object_array_length(rows) == 1);
@@ -460,9 +469,40 @@ static void test_library_pages(void)
     assert(ji(json_object_array_get_idx(rows, 0), "word_count", 0) == 3000);
     json_object_put(page);
 
-    assert(store_library_page(s, "radio", 1, 20, error, sizeof(error)) == NULL);
-    assert(store_library_page(s, "music", 0, 20, error, sizeof(error)) == NULL);
-    assert(store_library_page(s, "music", 1, 0, error, sizeof(error)) == NULL);
+    assert(store_library_page(s, "radio", "", 1, 20, error, sizeof(error)) == NULL);
+    assert(store_library_page(s, "music", "", 0, 20, error, sizeof(error)) == NULL);
+    assert(store_library_page(s, "music", "", 1, 0, error, sizeof(error)) == NULL);
+    assert(store_library_page(s, "music", "bogus", 1, 20, error, sizeof(error)) == NULL);
+    store_destroy(s);
+    unlink(path);
+}
+
+static void test_download_recovery(void)
+{
+    char path[64];
+    Store *s = open_store(path, sizeof(path));
+    char error[SP_ERROR] = {0};
+    seed_music(s);
+    const char *stale = "https://archive.org/download/vol-1/a.mp3";
+    assert(store_download_start(s, stale, 999, error, sizeof(error)) == 0);
+    assert(store_download_recover(s, "sp", error, sizeof(error)) == 0);
+    assert_text(s->db, "SELECT status FROM download_items WHERE download_url=?1", stale, NULL,
+                "pending");
+
+    json_object *config = parse("{\"name\":\"recovery\"}");
+    int64_t spider = store_save_spider(s, 0, config, error, sizeof(error));
+    assert(spider > 0);
+    int64_t run = store_start_run(s, spider, error, sizeof(error));
+    assert(run > 0);
+    json_object *claimed = store_claim_run(s, NULL, 0, error, sizeof(error));
+    assert(claimed);
+    json_object_put(claimed);
+    const char *active = "https://archive.org/download/vol-1/b.mp3";
+    assert(store_download_start(s, active, run, error, sizeof(error)) == 0);
+    assert(store_download_recover(s, "sp", error, sizeof(error)) == 0);
+    assert_text(s->db, "SELECT status FROM download_items WHERE download_url=?1", active, NULL,
+                "downloading");
+    json_object_put(config);
     store_destroy(s);
     unlink(path);
 }
@@ -477,6 +517,7 @@ int main(void)
     test_duplicate_url_rolls_back();
     test_migration_from_v3();
     test_library_pages();
+    test_download_recovery();
     puts("download catalog passed");
     return 0;
 }

@@ -49,6 +49,9 @@ def main():
             assert json.loads(api('/api/runs'))==[]
             data=json.loads(api('/api/library?type=music&page=1&page_size=20'))
             assert data['total']==0 and data['items']==[] and data['page_size']==20,data
+            data=json.loads(api('/api/library?type=music&page=1&page_size=20&status=downloaded'))
+            assert data['total']==0,data
+            api('/api/library?type=music&page=1&page_size=20&status=bogus',expected=400)
             data=json.loads(api('/api/library?type=novel&page=1&page_size=50'))
             assert data['total']==0,data
             api('/api/library?type=bogus&page=1&page_size=20',expected=400)

@@ -394,10 +394,8 @@ json_object *store_download_queue(Store *s, const char *spider_code, const char 
         fail(e, n, "Invalid download partition");
         return NULL;
     }
-    if (limit <= 0)
-        limit = 100;
-    if (limit > 10000)
-        limit = 10000;
+    if (limit < 0)
+        limit = 0;
     const char *sql;
     if (media_type && !strcmp(media_type, "music"))
         sql = "SELECT * FROM music_downloads WHERE spider_code=?1 AND decision='include' AND "
@@ -426,12 +424,12 @@ json_object *store_download_queue(Store *s, const char *spider_code, const char 
     if (media_type && (!strcmp(media_type, "music") || !strcmp(media_type, "novel"))) {
         sqlite3_bind_int(q, 2, partition);
         sqlite3_bind_int(q, 3, partitions);
-        sqlite3_bind_int(q, 4, limit);
+        sqlite3_bind_int64(q, 4, limit > 0 ? limit : -1);
     } else {
         text(q, 2, media_type);
         sqlite3_bind_int(q, 3, partition);
         sqlite3_bind_int(q, 4, partitions);
-        sqlite3_bind_int(q, 5, limit);
+        sqlite3_bind_int64(q, 5, limit > 0 ? limit : -1);
     }
     rows = json_object_new_array();
     int rc;
@@ -577,13 +575,19 @@ done:
     return rows;
 }
 
-json_object *store_library_page(Store *s, const char *media_type, int page, int page_size,
-                                char *e, size_t n)
+json_object *store_library_page(Store *s, const char *media_type, const char *status, int page,
+                                int page_size, char *e, size_t n)
 {
     if (e && n)
         *e = 0;
     if (!s || !media_type || (strcmp(media_type, "music") && strcmp(media_type, "novel"))) {
         fail(e, n, "Library type must be music or novel");
+        return NULL;
+    }
+    if (status && *status && strcmp(status, "pending") && strcmp(status, "downloading") &&
+        strcmp(status, "downloaded") && strcmp(status, "skipped") && strcmp(status, "failed") &&
+        strcmp(status, "ignored")) {
+        fail(e, n, "Invalid library status");
         return NULL;
     }
     if (page < 1 || page_size < 1 || page_size > 1000) {
@@ -594,10 +598,13 @@ json_object *store_library_page(Store *s, const char *media_type, int page, int 
     pthread_mutex_lock(&s->mutex);
     json_object *out = NULL;
     sqlite3_stmt *q = NULL;
-    q = prepare(s, music ? "SELECT count(*) FROM music_downloads"
-                         : "SELECT count(*) FROM novel_downloads");
+    q = prepare(s, music ? "SELECT count(*) FROM music_downloads WHERE (?1='' OR ?1 IS NULL OR "
+                           "status=?1)"
+                         : "SELECT count(*) FROM novel_downloads WHERE (?1='' OR ?1 IS NULL OR "
+                           "status=?1)");
     if (!q)
         goto failed;
+    text(q, 1, status);
     if (sqlite3_step(q) != SQLITE_ROW)
         goto failed;
     int64_t total = sqlite3_column_int64(q, 0);
@@ -611,15 +618,17 @@ json_object *store_library_page(Store *s, const char *media_type, int page, int 
         s,
         music ? "SELECT id,artist,title,album,track_no,format,coalesce(local_bytes,bytes) AS bytes,"
                 "seconds,decision,status,target_path,item_identifier,item_title,item_url,"
-                "updated_at,downloaded_at FROM music_downloads ORDER BY id DESC LIMIT ?1 OFFSET ?2"
+                "updated_at,downloaded_at FROM music_downloads WHERE (?1='' OR ?1 IS NULL OR "
+                "status=?1) ORDER BY id DESC LIMIT ?2 OFFSET ?3"
               : "SELECT id,author,title,series,chapter_no,language,word_count,format,"
                 "coalesce(local_bytes,bytes) AS bytes,decision,status,target_path,item_identifier,"
                 "item_title,item_url,updated_at,downloaded_at FROM novel_downloads "
-                "ORDER BY id DESC LIMIT ?1 OFFSET ?2");
+                "WHERE (?1='' OR ?1 IS NULL OR status=?1) ORDER BY id DESC LIMIT ?2 OFFSET ?3");
     if (!q)
         goto failed;
-    sqlite3_bind_int64(q, 1, page_size);
-    sqlite3_bind_int64(q, 2, offset);
+    text(q, 1, status);
+    sqlite3_bind_int64(q, 2, page_size);
+    sqlite3_bind_int64(q, 3, offset);
     json_object *items = json_object_new_array();
     int rc;
     while ((rc = sqlite3_step(q)) == SQLITE_ROW)
@@ -672,4 +681,28 @@ bool store_download_sha1_exists(Store *s, const char *sha1, const char *item_ide
     }
     pthread_mutex_unlock(&s->mutex);
     return found;
+}
+
+int store_download_recover(Store *s, const char *spider_code, char *e, size_t n)
+{
+    if (!s || !spider_code || !*spider_code)
+        return fail(e, n, "Invalid download recovery");
+    pthread_mutex_lock(&s->mutex);
+    sqlite3_stmt *q = prepare(
+        s, "UPDATE download_items SET status='pending',error='' WHERE spider_code=?1 AND "
+           "status='downloading' AND (last_run_id IS NULL OR NOT EXISTS(SELECT 1 FROM runs r "
+           "WHERE r.id=download_items.last_run_id AND r.status='running'))");
+    int rc = -1;
+    if (!q)
+        fail(e, n, "SQLite: %s", sqlite3_errmsg(s->db));
+    else {
+        text(q, 1, spider_code);
+        if (sqlite3_step(q) != SQLITE_DONE)
+            fail(e, n, "SQLite: %s", sqlite3_errmsg(s->db));
+        else
+            rc = 0;
+        sqlite3_finalize(q);
+    }
+    pthread_mutex_unlock(&s->mutex);
+    return rc;
 }

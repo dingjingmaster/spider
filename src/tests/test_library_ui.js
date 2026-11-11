@@ -31,7 +31,7 @@ const context = vm.createContext({
 const run = value => vm.runInContext(value, context);
 const settle = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
-  responses['/api/library?type=music&page=1&page_size=20'] = music;
+  responses['/api/library?type=music&page=1&page_size=20&status='] = music;
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/ui/library.js'), 'utf8'), context);
   for (let i = 0; i < 20 && elements.get('library-rows').children.length !== 3; i++) await settle();
   assert.equal(elements.get('library-rows').children.length, 3);
@@ -45,7 +45,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(first.children[8].children[0].textContent, 'Source');
   assert.match(elements.get('page-info').textContent, /第 1 \/ 1 页，共 3 条/);
 
-  responses['/api/library?type=novel&page=1&page_size=20'] = novel;
+  responses['/api/library?type=novel&page=1&page_size=20&status='] = novel;
   run('state.type="novel";state.page=1;renderTabs()');
   await run('load()');
   const row = elements.get('library-rows').children[0];
@@ -57,10 +57,14 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(row.children[6].children[0].textContent, '待下载');
   assert.match(elements.get('page-info').textContent, /共 1 条/);
 
-  responses['/api/library?type=music&page=1&page_size=50'] = {...music, page_size: 50};
+  responses['/api/library?type=music&page=1&page_size=50&status='] = {...music, page_size: 50};
   run('state.type="music";state.page=1;state.pageSize=50;renderTabs()');
   await run('load()');
-  assert.ok(requests.some(url => url === '/api/library?type=music&page=1&page_size=50'));
+  assert.ok(requests.some(url => url === '/api/library?type=music&page=1&page_size=50&status='));
   assert.match(elements.get('page-info').textContent, /共 3 条/);
+  responses['/api/library?type=music&page=1&page_size=50&status=downloaded'] = {...music, page_size: 50};
+  run('state.status="downloaded";state.page=1;state.pageSize=50');
+  await run('load()');
+  assert.ok(requests.some(url => url.includes('status=downloaded')));
   console.log('library UI passed: music/novel columns, page size and pagination');
 })().catch(error => { console.error(error); process.exitCode = 1; });

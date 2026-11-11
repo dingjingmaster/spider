@@ -16,8 +16,8 @@ json_object *status_code_run(Status *, int64_t run);
 json_object *status_run(Status *, int64_t);
 json_object *status_runs(Status *, int64_t spider, char *, size_t);
 json_object *status_events(Status *, int64_t run, char *, size_t);
-json_object *status_library(Status *, const char *media_type, int page, int page_size, char *,
-                            size_t);
+json_object *status_library(Status *, const char *media_type, const char *status, int page,
+                            int page_size, char *, size_t);
 json_object *status_steps(Status *, int64_t run, char *, size_t);
 json_object *status_step(Status *, int64_t run, int64_t step);
 #endif

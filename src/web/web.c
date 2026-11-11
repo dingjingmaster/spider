@@ -121,11 +121,19 @@ static int handler(struct mg_connection *c, void *context)
                 return error_json(c, 400, "type must be music or novel");
             int page = (int)query_number(r->query_string, "page", 1);
             int page_size = (int)query_number(r->query_string, "page_size", 20);
+            char status[16] = "";
+            if (r->query_string)
+                mg_get_var(r->query_string, strlen(r->query_string), "status", status,
+                           sizeof(status));
             if (page < 1)
                 page = 1;
             if (page_size != 20 && page_size != 50 && page_size != 100)
                 return error_json(c, 400, "page_size must be 20, 50 or 100");
-            json_object *result = status_library(app->status, type, page, page_size, e,
+            if (*status && strcmp(status, "pending") && strcmp(status, "downloading") &&
+                strcmp(status, "downloaded") && strcmp(status, "skipped") &&
+                strcmp(status, "failed") && strcmp(status, "ignored"))
+                return error_json(c, 400, "Invalid status filter");
+            json_object *result = status_library(app->status, type, status, page, page_size, e,
                                                  sizeof(e));
             return reply_rows(c, result, e);
         }

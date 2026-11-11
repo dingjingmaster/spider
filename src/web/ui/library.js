@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {type: 'music', page: 1, pageSize: 20, total: 0, pages: 0, token: sessionStorage.getItem('spider-token') || '', loading: false};
+const state = {type: 'music', status: '', page: 1, pageSize: 20, total: 0, pages: 0, loading: false};
 const columns = {
   music: [['artist', '歌手'], ['title', '曲名'], ['album', '专辑'], ['format', '格式'], ['bytes', '大小'], ['seconds', '时长'], ['status', '状态'], ['target_path', '文件'], ['item_title', '来源']],
   novel: [['author', '作者'], ['title', '书名'], ['series', '系列'], ['chapter_no', '章节'], ['word_count', '字数'], ['format', '格式'], ['status', '状态'], ['target_path', '文件'], ['item_title', '来源']]
@@ -72,12 +72,10 @@ async function load() {
   if (state.loading) return;
   state.loading = true; $('refresh').disabled = true; $('connection').textContent = '正在加载';
   try {
-    const headers = state.token ? {Authorization: `Bearer ${state.token}`} : {};
-    const response = await fetch(`/api/library?type=${encodeURIComponent(state.type)}&page=${state.page}&page_size=${state.pageSize}`, {method: 'GET', headers});
+    const response = await fetch(`/api/library?type=${encodeURIComponent(state.type)}&page=${state.page}&page_size=${state.pageSize}&status=${encodeURIComponent(state.status)}`, {method: 'GET'});
     if (!response.ok) {
       let message = `查询失败 (${response.status})`;
       try { message = (await response.json()).error || message; } catch (_) {}
-      if (response.status === 401) $('token-panel').hidden = false;
       throw new Error(message);
     }
     const data = await response.json();
@@ -96,12 +94,10 @@ async function load() {
 function setType(type) { if (state.type === type) return; state.type = type; state.page = 1; renderTabs(); load(); }
 $('type-music').onclick = () => setType('music');
 $('type-novel').onclick = () => setType('novel');
+$('status-filter').onchange = () => { state.status = $('status-filter').value; state.page = 1; load(); };
 $('page-size').onchange = () => { state.pageSize = Number($('page-size').value); state.page = 1; load(); };
 $('prev').onclick = () => { if (state.page > 1) { state.page--; load(); } };
 $('next').onclick = () => { if (state.page < Math.max(1, state.pages)) { state.page++; load(); } };
 $('refresh').onclick = load;
-$('token-toggle').onclick = () => { $('token-panel').hidden = !$('token-panel').hidden; };
-$('token-save').onclick = () => { state.token = $('token').value; sessionStorage.setItem('spider-token', state.token); state.page = 1; load(); };
-$('token').value = state.token;
 renderTabs();
 load();

@@ -88,12 +88,10 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/ui/app.js'), 'utf8'
   const oldUnauthorized = run('refresh()');
   await new Promise(resolve => setImmediate(resolve));
   context.fetch = async () => ({ok:true,json:async () => []});
-  elements.get('token-panel').hidden = true;
   await run('refresh()');
   releaseUnauthorized({error:'obsolete token failure'});
   await oldUnauthorized;
   assert.equal(elements.get('connection').textContent, '服务已连接');
-  assert.equal(elements.get('token-panel').hidden, true);
   let posted = null;
   context.fetch = async (url, options) => {
     if (url === '/api/spiders/1/run') {

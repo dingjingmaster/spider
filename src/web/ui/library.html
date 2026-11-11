@@ -8,9 +8,8 @@
 <header>
   <div class="brand"><span class="brand-mark">S</span><div><strong>Spider</strong><small>本地数据</small></div></div>
   <nav class="nav"><a href="/">运行状态</a><a href="/library" class="active">本地数据</a></nav>
-  <div class="connection"><span id="connection" role="status">正在连接</span><button id="token-toggle">连接设置</button></div>
+  <div class="connection"><span id="connection" role="status">正在连接</span></div>
 </header>
-<div id="token-panel" class="token-panel" hidden><label>API 访问口令<input id="token" type="password" autocomplete="off"></label><button id="token-save">连接</button><span>口令仅保存在当前浏览器会话中。</span></div>
 <main>
   <div class="page-heading"><div><p class="eyebrow">LOCAL LIBRARY</p><h1>本地数据</h1><p>按类型查看已扫描和已下载的条目。</p></div><div class="refresh"><span class="muted" id="library-summary">等待加载</span><button id="refresh">刷新</button></div></div>
   <div id="notice" role="status" hidden></div>
@@ -21,6 +20,17 @@
     </div>
     <div class="toolbar">
       <span class="muted" id="toolbar-summary"></span>
+      <label>状态
+        <select id="status-filter">
+          <option value="">全部</option>
+          <option value="pending">待下载</option>
+          <option value="downloading">下载中</option>
+          <option value="downloaded">已下载</option>
+          <option value="skipped">已存在</option>
+          <option value="failed">失败</option>
+          <option value="ignored">已忽略</option>
+        </select>
+      </label>
       <label>每页
         <select id="page-size"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select>
         条

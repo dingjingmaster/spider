@@ -47,6 +47,9 @@ def main():
             rows=api('/api/spiders');assert {row['code_id'] for row in rows}=={'good','bad','idle'},rows
             data=api('/api/library?type=music&page=1&page_size=20')
             assert data['total']==0 and data['items']==[],data
+            data=api('/api/library?type=music&page=1&page_size=20&status=downloaded')
+            assert data['total']==0,data
+            api('/api/library?type=music&page=1&page_size=20&status=bogus',expected=400)
             api('/api/library?type=music&page=1&page_size=10',expected=400)
             ids={row['code_id']:row['id'] for row in rows}
             versions={row['code_id']:row['version'] for row in rows}

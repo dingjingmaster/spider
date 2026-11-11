@@ -60,7 +60,7 @@ static const char *ARCHIVE_DEFAULT_CONFIG =
     "\"format_prefer\":[\"24bit Flac\",\"Flac\",\"320Kbps MP3\",\"VBR MP3\",\"128Kbps MP3\","
     "\"MP3\",\"Ogg Vorbis\",\"WAVE\",\"Apple Lossless\"],"
     "\"min_score\":3,\"download_all\":true,\"min_seconds\":30,\"max_seconds\":1200,\"min_bytes\":20480,"
-    "\"page_size\":500,\"max_pages\":50,\"max_items\":0,\"download_limit\":100,"
+    "\"page_size\":500,\"max_pages\":50,\"max_items\":0,\"download_limit\":0,"
     "\"delay_ms\":700,\"max_bytes\":33554432,\"download_max_bytes\":0,"
     "\"download_timeout_seconds\":0,\"ssl_verify\":false,"
     "\"interval_seconds\":86400,\"enabled\":true"
@@ -724,10 +724,12 @@ static int run_download(CrawlerContext *context, json_object *config, char *erro
 {
     const char *spider = js(config, "spider_code", ARCHIVE_DEFAULT_CODE);
     const char *root = js(config, "download_root", "");
-    int limit = ji(config, "download_limit", 100);
+    int limit = ji(config, "download_limit", 0);
     int partition = ji(config, "partition_index", 0);
     int partitions = ji(config, "partition_count", 1);
     int delay = ji(config, "download_delay_ms", ji(config, "delay_ms", 700));
+    if (store_download_recover(context->store, spider, error, cap))
+        return -1;
     json_object *queue =
         store_download_queue(context->store, spider, "music", limit, partition, partitions, error,
                              cap);
