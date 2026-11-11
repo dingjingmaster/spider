@@ -215,8 +215,19 @@ int crawler_save_file(CrawlerContext *c, json_object *options, const char *url, 
         }
     }
     json_object_put(rows);
+    if (options && !json_object_is_type(options, json_type_object))
+        return fail(e, n, "Download options must be an object");
+    json_object *merged = options ? json_object_get(options) : json_object_new_object();
+    if (!merged)
+        return fail(e, n, "Cannot allocate download options");
+    const char *inherited[] = {"download_root", "on_exists"};
+    for (size_t i = 0; i < sizeof(inherited) / sizeof(*inherited); i++) {
+        json_object *configured = jg(c->config, inherited[i]);
+        if (!jg(merged, inherited[i]) && configured)
+            json_object_object_add(merged, inherited[i], json_object_get(configured));
+    }
     DownloadRequest request = {.group_id = c->run_id,
-                               .options = options,
+                               .options = merged,
                                .url = url,
                                .session = c->session,
                                .cancelled = crawler_cancelled,
@@ -224,6 +235,7 @@ int crawler_save_file(CrawlerContext *c, json_object *options, const char *url, 
                                .record = record,
                                .record_context = c};
     int rc = download_save(c->downloads, &request, file, e, n);
+    json_object_put(merged);
     char saved[SP_ERROR] = {0};
     if (persist_session(c, saved, sizeof(saved)))
         return fail(e, n, "%s", saved);

@@ -69,7 +69,7 @@ src/
 默认数据目录为启动位置的 `./data`，可用 `--data-dir` 指定：
 
 - `spider.db`：代码任务目录、历史配置/版本、运行、检查点、HTTP 尝试、结果、文件元数据和事件。
-- `downloads/`：下载文件，当前按运行 ID＋SHA-256 命名为 `.bin`。
+- `downloads/`：默认按运行 ID＋SHA-256 命名为 `.bin`。爬虫可在下载参数中给出 `download_root`（必须是绝对路径）和 `path`（相对 `download_root` 的路径，含文件名），模块会递归创建父目录并按该路径保存；`on_exists` 支持 `skip`（有 `path` 时默认）、`overwrite`（无 `path` 时的默认）和 `unique`。爬虫顶层配置里的 `download_root`、`on_exists` 会被 `crawler_save_file` 自动继承。
 
 SQLite 使用 WAL、外键和短事务。核心 `user_version` 为 3，新增的 `code_spiders` 是启动时自动创建的辅助映射表。旧定义迁移规则保留；同步当前代码目录后，未注册的历史任务不再参与调度。更新前应停止服务并备份数据目录。
 

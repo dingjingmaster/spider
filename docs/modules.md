@@ -116,7 +116,9 @@ int my_site_register(CrawlerRegistry *registry, char *error, size_t cap)
 }
 ```
 
-`download: true` 只把链接转换为绝对地址，不会自动下载。需要实际下载时，在循环里调用 `crawler_save_file(context, options, url, &file, error, cap)`。它组合下载模块和持久化登记，返回 `DownloadFile`，同一次运行的已登记且仍可读 URL 可复用。单独使用下载模块时，`download_save` 的 `record` 回调接收文件信息，不接收数据库句柄。
+`download: true` 只把链接转换为绝对地址，不会自动下载。需要实际下载时，在循环里调用 `crawler_save_file(context, options, url, &file, error, cap)`。它组合下载模块和持久化登记，返回 `DownloadFile`，同一次运行的已登记且仍可读 URL 可复用。
+
+下载参数支持可选的 `download_root`（绝对路径，缺失时使用数据目录的 `downloads/`）、`path`（相对路径，含文件名，父目录会自动创建）和 `on_exists`（`skip`、`overwrite`、`unique`）。未提供 `path` 时保持 `{运行ID}-{SHA-256}.bin` 的旧命名，默认覆盖；提供 `path` 时默认跳过已存在的文件。`path` 必须是相对路径，不允许 `.`、`..` 和空路径段；控制字符和反斜杠会替换为 `_`。爬虫顶层配置里的 `download_root`、`on_exists` 会被 `crawler_save_file` 自动继承，单次调用的 options 优先。单独使用下载模块时，`download_save` 的 `record` 回调接收文件信息，不接收数据库句柄。
 
 实现类型与任务分开注册：`crawler_register` 定义如何执行，`crawler_add` 定义一个具体任务。`crawler_add` 复制配置并补充 implementation，调用对应校验器；代码 ID 不允许重复。main 在调度器启动前调用 `crawler_sync`，事务同步当前任务目录。相同代码 ID 保留数据库 ID/历史；配置未变不追加版本、不重置 next_run；移除任务后停用并取消未完成运行，重新登记同一代码 ID 可恢复身份。
 
