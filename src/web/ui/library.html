@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Spider · 本地数据</title><link rel="stylesheet" href="/style.css"><script src="/library.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="brand-mark">S</span><div><strong>Spider</strong><small>本地数据</small></div></div>
+  <nav class="nav"><a href="/">运行状态</a><a href="/library" class="active">本地数据</a></nav>
+  <div class="connection"><span id="connection" role="status">正在连接</span><button id="token-toggle">连接设置</button></div>
+</header>
+<div id="token-panel" class="token-panel" hidden><label>API 访问口令<input id="token" type="password" autocomplete="off"></label><button id="token-save">连接</button><span>口令仅保存在当前浏览器会话中。</span></div>
+<main>
+  <div class="page-heading"><div><p class="eyebrow">LOCAL LIBRARY</p><h1>本地数据</h1><p>按类型查看已扫描和已下载的条目。</p></div><div class="refresh"><span class="muted" id="library-summary">等待加载</span><button id="refresh">刷新</button></div></div>
+  <div id="notice" role="status" hidden></div>
+  <section class="card">
+    <div class="tabs" id="types">
+      <button id="type-music" class="active">音乐</button>
+      <button id="type-novel">小说</button>
+    </div>
+    <div class="toolbar">
+      <span class="muted" id="toolbar-summary"></span>
+      <label>每页
+        <select id="page-size"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select>
+        条
+      </label>
+    </div>
+    <div class="table-scroll"><table><thead id="library-head"></thead><tbody id="library-rows"></tbody></table></div>
+    <div class="pagination">
+      <button id="prev">上一页</button>
+      <span id="page-info">第 1 页</span>
+      <button id="next">下一页</button>
+    </div>
+  </section>
+  <footer>Spider · C / SQLite · 本地数据</footer>
+</main>
+</body>
+</html>

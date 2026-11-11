@@ -1,0 +1,16 @@
+/data/
+/.idea/
+/build*/
+/.cache/
+/.vscode/
+/.qtcreator/
+/.worktrees/
+/__pycache__/
+/.superpowers/
+*.pyc
+*.o
+*.a
+*.so
+*.swp
+*~
+.DS_Store
