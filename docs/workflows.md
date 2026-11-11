@@ -1,8 +1,10 @@
-# 多步骤采集
+# 工作流引擎协议
 
-网页使用统一工作流编辑器；新建规则默认是 `request → foreach → emit`。request 可直接填写地址、方法、格式与选择器，其他属性可在步骤 JSON 或完整 JSON 编辑器中配置。可以载入界面内的列表/详情示例，或导入 [list-detail.json](../src/rule/examples/list-detail.json)。示例的地址/选择器需要替换为实际目标站点，不是对 example.com 的可用采集承诺。
+本页描述 `spiders/workflow/` 通用引擎，可由 C 代码登记固定工作流任务。产品 Web 只显示状态，不提供新建、编辑、导入、绑定或调试功能。代码调用方式见 [模块说明](modules.md)。
 
-JSON 工作流规则使用 `schema_version: 2`，默认实现类型为 `workflow`；其他编译注册的 C 爬虫使用自己的配置。针对工作流，API 新建、更新、试采集以及网页导入均拒绝 v1 平面规则。SQLite 当前 `user_version = 3`：首次升级在事务内把现有 v1 当前定义转换成普通工作流，追加版本；历史版本、运行 snapshots/items 和 IDs 保持原样。未完成的旧运行标记 failed，不重放。任何无效旧定义导致升级事务回滚和启动报错。升级前停止服务并备份整个数据目录；升级后不承诺旧程序回退支持。详见 [迁移说明](../src/storage/migrations/README.md)。
+下文中的预览与历史 HTTP 示例是 tests/support 引擎测试夹具的协议，只有测试程序提供这些路由，不属于产品 Web API。工作流运行数据和规则格式继续用于恢复及引擎回归验证。
+
+JSON 工作流使用 `schema_version: 2`。SQLite 核心 `user_version=3`，旧定义升级和历史快照保持原有边界；启动代码目录同步之后，旧网页任务不参与调度。
 
 ## 定义与执行
 
@@ -72,7 +74,7 @@ JSON 工作流规则使用 `schema_version: 2`，默认实现类型为 `workflow
 | default | 字面默认值，仅补缺失属性，不替换 null、false 或0 |
 | additionalProperties | 布尔值；false 拒绝 properties 未声明的对象字段 |
 
-不支持的关键字会报错；不执行隐式类型转换，例如字符串 `"12"` 不满足 integer。需要转换时使用显式 transform/cast。约束默认值也需满足自身类型要求。编辑器中的 input/schema/next_input 留空表示省略；填写 `null`、`false`、`0` 或 `{}` 则保留该明确值。
+不支持的关键字会报错；不执行隐式类型转换，例如字符串 `"12"` 不满足 integer。需要转换时使用显式 transform/cast。约束默认值也需满足自身类型要求。未设置 input/schema/next_input 表示省略；显式设置 `null`、`false`、`0` 或 `{}` 则保留该值。
 
 步骤完成时先保存到 `steps.ID`，再计算 `next_input`，最后按可选根级 `retain_steps` 裁剪上下文中的步骤输出。例如 `"next_input":{"$ref":"/steps/prepare"},"retain_steps":["prepare"]` 将准备结果交给下一步，同时释放其他步骤的上下文副本。省略 retain_steps 保留现有输出，空数组清空 steps；列表只能包含本规则已定义的步骤 ID。裁剪不删除持久化 trace；已识别的敏感值标记也会跨裁剪保留。不要把某个值只保留在已裁剪的 steps 中，随后又引用它。
 
@@ -113,7 +115,7 @@ request 支持：
 }
 ```
 
-query 对象按字段进行 URL 编码，json 按 JSON 编码并补充 Content-Type；json 和原始 body 不能同时使用。GET/POST 是当前支持的方法。请求中的相对 URL 根据当前分支最近一次响应的最终 URL 解析。响应输出包含 items、next_url、iteration、response.status/url/bytes/truncated；默认还保留最多64 KiB 的 response.body，提取仍针对完整的有界响应。没有 extract 时不提取字段，items 为空；登录或纯 HTTP 步骤可在网页关闭“启用字段提取”，保存时保留 extract 缺省。extract 使用 CSS 或 JSON Pointer，字段默认类型是 string。除 string/number/integer/boolean 外，type 支持 object、array、json：JSON 响应保留原生嵌套值，HTML 文本则需能解析为 JSON。object/array 要求形状匹配，json 可保留任意 JSON 值。非必填的缺失/null 输出为 null，required 字段缺失/null 报错。
+query 对象按字段进行 URL 编码，json 按 JSON 编码并补充 Content-Type；json 和原始 body 不能同时使用。GET/POST 是当前支持的方法。请求中的相对 URL 根据当前分支最近一次响应的最终 URL 解析。响应输出包含 items、next_url、iteration、response.status/url/bytes/truncated；默认还保留最多64 KiB 的 response.body，提取仍针对完整的有界响应。没有 extract 时不提取字段，items 为空；登录或纯 HTTP 步骤可以省略 extract。extract 使用 CSS 或 JSON Pointer，字段默认类型是 string。除 string/number/integer/boolean 外，type 支持 object、array、json：JSON 响应保留原生嵌套值，HTML 文本则需能解析为 JSON。object/array 要求形状匹配，json 可保留任意 JSON 值。非必填的缺失/null 输出为 null，required 字段缺失/null 报错。
 
 请求步骤**根级** `response_json:true` 将完整且受 max_bytes 限制的响应解析并保留为 `response.json`；它不受64 KiB 正文预览上限截断，响应不是合法 JSON 时失败。根级 `response_body:false` 省略 response.body，默认仍保留原正文预览。这两个布尔选项与 request/extract 同级，不放在 request 对象中；可以关闭字段提取，仅保留完整响应 JSON。
 
@@ -166,28 +168,24 @@ price/stock 分支分别结束，extra 实例恢复后汇合为 `steps.extra.pri
 
 GET 等可恢复步骤在重启后重新领取，已提交的步骤不再运行。停止运行将取消排队、运行及等待中的实例；晚到的结果不会再提交记录。取消只中止本地等待，不能撤销已经到达远端的请求。外部 HTTP 的副作用无法与 SQLite 形成同一个事务；本地 emit 的幂等不等同于远端请求只执行一次。
 
-## 调试与 API
+## 引擎调试与测试夹具协议（非产品 API）
 
-网页提供 request 结构表单、逐步骤 input/schema/next_input、transform、完整 JSON 和 v2 导入导出。原“试采集”按钮仍只执行选中的 request：`POST /api/preview` 接受 `{rule,step_id,context}`，不自动执行前置或后续步骤。
+测试夹具的单步预览只执行选中的 request：`POST /api/preview` 接受 `{rule,step_id,context}`，不自动执行前置或后续步骤。
 
 连续调试使用 `POST /api/preview/step`。首次请求包含 rule、step_id，可选 context；后续请求携带相同 rule、选择的 step_id 和服务端返回的 session_id，**不再携带 context**。返回 `{session_id,step_id,output,context,request,next_steps,notice}`。返回的 context/output/request 是展示副本；不要把脱敏后的 Token 当作真实值传回，真实上下文与临时 Cookie 由服务端继续保留。
 
 可选参数 dry_run 为 true 时仅解析 request，不发送 HTTP，也不推进会话；返回 request 可检查 URL、编码后的参数及请求体。foreach 仅预览 item_index 指定的一项，省略时为0，并返回单条预览提示；parallel 必须提供 branch。调试每次只执行一个 request/transform/join/emit/condition 或选定分支的分组入口，不会自动运行整个工作流，不下载文件，emit 不写最终结果；next_steps 只是可继续步骤的建议。
 
-服务端最多16个临时调试会话，闲置10分钟失效，每会话最多256个已执行步骤；上下文/输出仍受4 MiB 等数据限额约束。调试会话不持久化；修改规则需创建新会话。网页在规则或初始上下文修改、点击重置时异步释放已知会话，可重新开始；迟到且不再采用的预览结果也释放其会话，不会覆盖新调试结果或释放当前有效会话。释放失败不阻塞编辑，闲置会话仍由超时机制回收。
+服务端最多16个临时调试会话，闲置10分钟失效，每会话最多256个已执行步骤；上下文/输出仍受4 MiB 等数据限额约束。调试会话不持久化；修改规则需创建新会话。历史调试器在规则或初始上下文修改、点击重置时异步释放已知会话，可重新开始；迟到且不再采用的预览结果也释放其会话，不会覆盖新调试结果或释放当前有效会话。释放失败不阻塞编辑，闲置会话仍由超时机制回收。
 
 `POST /api/preview/release` 接受 `{"session_id":"返回的会话ID"}`，释放该临时会话，成功返回200；不需要 rule。与其他写 API 一样需要认证和 `X-Spider-Request: 1`。
 
-页面使用方法：
+测试夹具可以传入初始上下文 `{"input":{},"steps":{}}`，缺少 run 时使用规则 vars。缺少前置输出时需先执行前置步骤，或在初始 steps 提供测试数据。foreach 选择 item_index，parallel 选择 branch；这些能力通过测试夹具请求调用，没有对应产品页面。
 
-1. 选择“连续单步调试”的当前步骤；首次初始上下文默认是 `{"input":{},"steps":{}}`，未提供 run 时使用规则 vars，只有明确输入 run 才覆盖。缺少先前输出时可先调试前置步骤，或在初始 steps 中提供测试数据。
-2. 点击“调试当前步骤”，检查输出和提示；点击“继续所选步骤”仅执行一个后续步骤。foreach 可选记录下标，parallel 可选分支；需要时先“生成请求（不发送）”。
-3. 在“从上一步或上下文绑定字段”的 JSON 树点击一个值，选择目标步骤、URL/query/headers/json/input/next_input 及必要的参数名，点击绑定。树的根和内部状态仅供展开查看，只有 run/input/steps 下的数据可绑定。生成的 Pointer 引用保留数值、对象和数组，任意键会正确转义；规则改变后重新调试目标步骤。
-
-`GET /api/runs/{id}/steps` 返回最近1000个实例的元数据，不批量返回上下文。`GET /api/runs/{id}/steps/{instance_id}` 按需返回单个实例的 context/output/error；网页点击对应行后加载，也可从该上下文树绑定字段。认证要求与其他 API 相同。
+仅测试夹具提供 `GET /api/runs/{id}/steps` 和单个步骤实例 trace；产品状态页只读取状态与事件，不提供上下文绑定和步骤编辑。
 
 新连续预览和步骤 trace 使用递归脱敏副本，不改变执行或持久化结果。内置敏感字段名（例如 Authorization、Cookie、token/password/secret 等）会遮蔽对应值；规则根可用 `"sensitive_fields":["sessionId","signingValue"]` 增加字段名。JSON 字符串正文也会解析后脱敏，已识别的敏感值在复制到其他字段、拼入请求或跨 retain_steps 裁剪后仍保持遮蔽。任意非 JSON 文本中的未知秘密无法全部推断；不需要保留正文时配置步骤根级 response_body:false。脱敏不意味着规则、结果数据库或所有外部响应都已清除秘密。
 
 sensitive_fields 最多64个名称，每个1..80字节。分支内敏感来源记录最多512个标量值、合计1 MiB，超限会明确报错。transform 消费敏感输入或在操作中引用敏感字段时，会保守遮蔽其派生输出；用于下一步请求的真实值和类型仍保持原样。
 
-结果仍通过 items/export API 获取。工作流根 fields 可用非空对象数组指定 CSV 列与顺序（`[{"name":"title"}]`）；每项 name 必须是非空字符串，显式配置无效时导出报错。仅未提供 fields 时推导所有最终结果的字段并排序。选择字段不改变保存的原始 JSON。
+引擎结果可通过测试夹具的 items/export API 获取（产品 Web 不提供这些接口）。工作流根 fields 可用非空对象数组指定 CSV 列与顺序（`[{"name":"title"}]`）；每项 name 必须是非空字符串，显式配置无效时导出报错。仅未提供 fields 时推导所有最终结果的字段并排序。选择字段不改变保存的原始 JSON。

@@ -35,6 +35,11 @@ void crawler_destroy(CrawlerRegistry *);
 /* Definitions are copied; userdata ownership transfers on successful register.
  * Register before scheduler_start. Frozen registries reject subsequent writes. */
 int crawler_register(CrawlerRegistry *, const CrawlerDefinition *, char *, size_t);
+/* Code-owned runnable tasks. config is cloned; key is stable across releases.
+ * Register tasks before scheduler_start, then synchronize once during startup. */
+int crawler_add(CrawlerRegistry *, const char *key, const char *implementation, json_object *config,
+                char *, size_t);
+int crawler_sync(CrawlerRegistry *, Store *, char *, size_t);
 void crawler_freeze(CrawlerRegistry *);
 json_object *crawler_definitions(CrawlerRegistry *);
 int crawler_validate(CrawlerRegistry *, json_object *, char *, size_t);

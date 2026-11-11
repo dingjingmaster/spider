@@ -1,40 +1,34 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Spider · 采集工作台</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Spider · 爬虫运行状态</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
 <body>
-<header><div class="brand"><span class="brand-mark">S</span><div><strong>Spider</strong><small>采集工作台</small></div></div><div class="connection"><span id="connection">正在连接</span><button id="token-toggle" class="subtle">连接设置</button></div></header>
-<div id="token-panel" class="token-panel" hidden><label>API 访问口令 <input id="token" type="password" autocomplete="off" placeholder="本地访问可留空"></label><button id="token-save">连接</button><span>口令仅保存在当前浏览器会话中。</span></div>
-<div class="workspace">
-<aside><div class="aside-title"><span>我的爬虫</span><button id="new" class="icon" title="新建爬虫">＋</button></div><div id="spiders" class="spider-list"></div><div class="aside-bottom">C / SQLite <span>v0.1.0</span></div></aside>
+<header><div class="brand"><span class="brand-mark">S</span><div><strong>Spider</strong><small>爬虫运行状态</small></div></div><div class="connection"><span id="connection" role="status">正在连接</span><button id="token-toggle">连接设置</button></div></header>
+<div id="token-panel" class="token-panel" hidden><label>API 访问口令<input id="token" type="password" autocomplete="off"></label><button id="token-save">连接</button><span>口令仅保存在当前浏览器会话中。</span></div>
 <main>
-<div class="page-heading"><div><div class="eyebrow">COLLECT · EXTRACT · KEEP</div><h1 id="editor-title">新建爬虫</h1><p>配置采集规则，先预览结果，再安排运行。</p></div><div class="actions"><button id="preview">试采集</button><button id="save" class="primary">保存规则</button><button id="run" class="primary green">立即运行</button></div></div>
-<div id="notice" role="status" hidden></div>
-<div class="editor-meta"><span id="version" class="badge">未保存</span><span class="muted">工作流支持请求、提取、详情、分支和结果输出。</span></div>
-<section class="card"><label>爬虫实现<select id="implementation"><option value="workflow">JSON 工作流</option></select></label></section>
-<section id="native-editor" class="card" hidden><h2>爬虫配置</h2><p class="muted">填写当前爬虫需要的配置。name 为名称，interval_seconds 为执行间隔（秒，0 表示手动），enabled 控制定时计划。</p><textarea id="native-config" rows="18" spellcheck="false" aria-label="爬虫配置 JSON"></textarea></section>
-<section id="workflow-editor" class="card">
-<div class="section-title"><div><h2>工作流步骤</h2><p>每个步骤独立请求或处理数据；foreach / parallel 的子分支在同一线程顺序执行并汇合。</p></div><button id="workflow-example">载入列表 → 详情示例</button></div>
-<div class="form-grid"><label>名称<input id="wf-name" maxlength="160"></label><label>入口步骤 ID<input id="wf-entry"></label><label>最多步骤实例<input id="wf-max-steps" type="number" min="1" max="10000"></label><label>执行间隔（秒，0 为手动）<input id="wf-interval" type="number" min="0" max="31536000"></label><label class="inline"><input id="wf-enabled" type="checkbox">启用定时计划</label></div>
-<details><summary>运行变量与默认请求策略</summary><div class="form-grid"><label class="span2">vars（JSON 对象）<textarea id="wf-vars" rows="4" spellcheck="false"></textarea></label><label class="span2">defaults（JSON 对象）<textarea id="wf-defaults" rows="4" spellcheck="false"></textarea></label></div></details>
-<p class="muted">每步可设置输入映射、类型约束和后续输入；transform 可转换已提取的 JSON。请求步骤可直接填写地址与解析选项；请求头、请求体等高级配置在步骤 JSON 中编辑。下一页选择器仅提取地址，继续翻页需要显式连接后续步骤。模板可引用 {{run.name}}、{{input.id}}、{{steps.list.items}}。精确模板保留 JSON 类型。步骤配置使用 JSON；不执行脚本。修改 ID 后请同步更新引用。</p>
-<div id="workflow-steps"></div><button id="add-step">＋ 添加步骤</button>
-<details><summary>完整工作流 JSON / 导出字段等高级配置</summary><textarea id="workflow-json" rows="18" spellcheck="false" aria-label="完整工作流 JSON"></textarea><button id="apply-workflow-json">应用 JSON 到编辑器</button><p class="muted">编辑此处后点击“应用 JSON”，再保存或运行。未知属性会保留。</p></details>
-<div class="workflow-preview"><label>试采集的 request 步骤<select id="preview-step"></select></label><label>新调试会话的初始上下文（JSON 对象）<textarea id="preview-context" rows="5" spellcheck="false">{"input":{},"steps":{}}</textarea></label></div>
-<div id="workflow-debug" class="workflow-debug">
-<div class="section-title"><h3>连续单步调试</h3><button id="debug-reset">重置调试</button></div>
-<p class="muted">每次只执行所选步骤；上一步的上下文和登录会话会沿用。修改规则或初始上下文后重新开始。留空或不填写 run 时使用规则变量。调试不保存结果、不下载文件；foreach 只选一条记录，parallel 需选一个分支。</p>
-<div class="form-grid"><label>当前步骤<select id="debug-step"></select></label><label>foreach 记录下标<input id="debug-item-index" type="number" min="0" value="0"></label><label>parallel 分支<select id="debug-branch"></select></label><label>可继续的步骤<select id="debug-next"></select></label></div>
-<div class="actions debug-actions"><button id="debug-execute">调试当前步骤</button><button id="debug-continue" disabled>继续所选步骤</button><button id="debug-dry-run">生成请求（不发送）</button></div>
-<p id="debug-notice" role="status" class="muted">选择步骤开始调试。</p><div id="debug-result" hidden><h3 id="debug-result-title">步骤输出</h3><pre id="debug-output"></pre><details id="debug-request-panel" hidden open><summary>解析后的请求</summary><pre id="debug-request"></pre></details></div>
-</div>
-<div id="data-binding" class="data-binding"><div class="section-title"><h3>从上一步或上下文绑定字段</h3><span id="binding-source" class="muted">调试步骤或选择运行实例后显示 JSON。</span></div><p class="muted">点击 JSON 树中的字段，再选择目标步骤和位置。引用会保留数值、数组和对象类型；参数名称可包含点号等字符。绑定后重新调试以验证结果。</p>
-<div class="binding-tools"><label>已选字段<input id="binding-path" readonly placeholder="点击下方 JSON 字段"></label><label>目标步骤<select id="binding-step"></select></label><label>绑定位置<select id="binding-target"><option value="url">请求 URL</option><option value="query">query 参数</option><option value="headers">请求头</option><option value="json">JSON 请求字段</option><option value="input">步骤 input</option><option value="next_input">步骤 next_input</option></select></label><label>参数名称<input id="binding-key" placeholder="query / headers / JSON 中的字段名"></label><button id="binding-apply">绑定所选字段</button></div><div id="binding-tree" class="json-tree"></div>
-</div>
-</section>
-<section class="card editor-footer"><div class="card-footer"><span>规则修改在下一次运行生效。</span><div><button id="import">导入规则</button><input id="import-file" type="file" accept="application/json,.json" hidden><button id="export-rule">导出规则</button><button id="delete" class="danger" hidden>删除爬虫</button></div></div></section>
-<section id="preview-card" class="card" hidden><div class="section-title"><h2>试采集结果</h2><span id="preview-meta"></span></div><div id="preview-items" class="table-scroll"></div><details id="preview-trace" hidden><summary>步骤试采集输出</summary><pre id="preview-output"></pre></details><details><summary>查看原始响应</summary><pre id="raw-response"></pre></details><p class="muted">试采集仅请求当前页面；不跟随分页，不保存结果，不下载文件。</p></section>
-<section class="card"><div class="section-title"><h2>运行历史</h2><button id="refresh">刷新</button></div><div class="table-scroll"><table><thead><tr><th>运行</th><th>状态</th><th>页面</th><th>结果</th><th>开始时间</th><th>规则版本</th></tr></thead><tbody id="runs"></tbody></table></div></section>
-<section id="run-detail" class="card" hidden><div class="section-title"><div><h2 id="run-title">运行详情</h2><p id="run-error"></p><p id="run-progress" role="status"></p></div><div class="actions"><button id="stop" class="danger">停止运行</button><button id="export-json">导出 JSON</button><button id="export-csv">导出 CSV</button></div></div><div id="result-items" class="table-scroll"></div><button id="more-results" hidden>加载后续结果</button><div id="artifacts" class="artifact-list"></div><details id="step-traces" hidden open><summary>工作流步骤实例（最近 1000 条）</summary><div class="table-scroll"><table><thead><tr><th>实例</th><th>步骤</th><th>父实例</th><th>分支 / 记录</th><th>状态</th><th>尝试次数</th><th>阶段</th></tr></thead><tbody id="step-rows"></tbody></table></div><p id="trace-title" class="muted">选择步骤查看上下文与输出。</p><div id="trace-detail" hidden><h3>上下文</h3><pre id="trace-context"></pre><h3>输出</h3><pre id="trace-output"></pre><h3>错误</h3><pre id="trace-error"></pre></div></details><details open><summary>运行日志</summary><pre id="events" class="events"></pre></details></section>
-<footer>Spider · 数据保存在你的服务器上</footer>
-</main></div>
-</body></html>
+  <div class="page-heading"><div><p class="eyebrow">CRAWLER MONITOR</p><h1>爬虫运行状态</h1><p>查看已注册爬虫的执行情况，页面自动刷新。</p></div><div class="refresh"><span id="updated-at">等待更新</span><button id="refresh">刷新</button></div></div>
+  <div id="notice" role="status" hidden></div>
+  <section class="summary" aria-label="运行概览">
+    <div class="metric"><span>爬虫数量</span><strong id="total-count">0</strong></div>
+    <div class="metric"><span>正在执行</span><strong id="running-count">0</strong></div>
+    <div class="metric"><span>累计成功</span><strong id="success-count">0</strong></div>
+    <div class="metric"><span>累计失败</span><strong id="failure-count">0</strong></div>
+  </section>
+  <section class="card"><div class="section-title"><h2>爬虫列表</h2><span class="muted">按代码注册</span></div>
+    <p id="empty-state" class="empty" hidden>当前程序尚未注册爬虫任务。</p>
+    <div class="table-scroll"><table><thead><tr><th>爬虫</th><th>执行周期</th><th>最近状态</th><th>成功 / 失败</th><th>最近开始</th><th>下次执行</th></tr></thead><tbody id="spiders"></tbody></table></div>
+  </section>
+  <section id="history-card" class="card" hidden><div class="section-title"><h2 id="history-title">运行历史</h2><span class="muted">最近 200 次</span></div>
+    <div class="table-scroll"><table><thead><tr><th>运行</th><th>状态</th><th>开始时间</th><th>完成时间</th><th>耗时</th><th>结果数</th></tr></thead><tbody id="runs"></tbody></table></div>
+  </section>
+  <section id="run-detail" class="card" hidden><div class="section-title"><h2 id="run-title">运行详情</h2><span id="run-state" class="status"></span></div>
+    <dl class="details"><div><dt>开始时间</dt><dd id="run-start">—</dd></div><div><dt>完成时间</dt><dd id="run-finish">—</dd></div><div><dt>耗时</dt><dd id="run-duration">—</dd></div><div><dt>结果数</dt><dd id="run-items">0</dd></div></dl>
+    <p id="run-progress" class="progress" role="status"></p><p id="run-error" class="error-text"></p>
+    <details open><summary>执行日志</summary><pre id="events">暂无日志</pre></details>
+  </section>
+  <footer>Spider · C / SQLite · 运行状态</footer>
+</main>
+</body>
+</html>

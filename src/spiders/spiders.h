@@ -1,7 +1,8 @@
-#ifndef SPIDER_SPIdERS_H
-#define SPIDER_SPIdERS_H
+#ifndef SPIDER_SPIDERS_H
+#define SPIDER_SPIDERS_H
 #include "crawler/crawler.h"
 /* The composition root calls this once, before starting the scheduler.
- * Add each compiled site definition here; scheduler code never changes. */
+ * Each site registers its implementation and crawler_add() task configuration.
+ * Scheduler code never changes when a site is added. */
 int spiders_register(CrawlerRegistry *, char *, size_t);
 #endif

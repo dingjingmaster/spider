@@ -7,6 +7,12 @@ typedef struct Store Store;
  * All operations synchronize internally. No network or site logic lives here. */
 Store *store_create(const char *path, char *error, size_t cap);
 void store_destroy(Store *store);
+/* Code task catalog: sync is atomic and preserves stable IDs/history. */
+int store_sync_code(Store *, json_object *tasks, char *, size_t);
+json_object *store_code_spiders(Store *, char *, size_t);
+json_object *store_code_spider(Store *, int64_t);
+json_object *store_code_runs(Store *, int64_t spider, char *, size_t);
+bool store_code_has_run(Store *, int64_t run);
 int64_t store_save_spider(Store *, int64_t, json_object *, char *, size_t);
 int store_delete_spider(Store *, int64_t, char *, size_t);
 int64_t store_start_run(Store *, int64_t, char *, size_t);

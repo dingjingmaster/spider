@@ -6,6 +6,7 @@
 struct CrawlerRegistry {
     CrawlerDefinition definitions[CRAWLER_CAPACITY];
     size_t count;
+    json_object *tasks;
     bool frozen;
 };
 static const CrawlerDefinition *find(CrawlerRegistry *r, const char *id)
@@ -18,7 +19,15 @@ static const CrawlerDefinition *find(CrawlerRegistry *r, const char *id)
 }
 CrawlerRegistry *crawler_create(void)
 {
-    return calloc(1, sizeof(CrawlerRegistry));
+    CrawlerRegistry *r = calloc(1, sizeof(*r));
+    if (r) {
+        r->tasks = json_object_new_array();
+        if (!r->tasks) {
+            free(r);
+            return NULL;
+        }
+    }
+    return r;
 }
 void crawler_destroy(CrawlerRegistry *r)
 {
@@ -31,6 +40,7 @@ void crawler_destroy(CrawlerRegistry *r)
         free((char *)d->id);
         free((char *)d->name);
     }
+    json_object_put(r->tasks);
     free(r);
 }
 int crawler_register(CrawlerRegistry *r, const CrawlerDefinition *d, char *e, size_t n)
@@ -51,6 +61,41 @@ int crawler_register(CrawlerRegistry *r, const CrawlerDefinition *d, char *e, si
     r->definitions[r->count].name = name;
     r->count++;
     return 0;
+}
+int crawler_add(CrawlerRegistry *r, const char *key, const char *implementation,
+                json_object *config, char *e, size_t n)
+{
+    if (!r || r->frozen || !key || !*key || strlen(key) > 63 ||
+        strspn(key, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") !=
+            strlen(key) ||
+        !implementation || !find(r, implementation) ||
+        !json_object_is_type(config, json_type_object) ||
+        json_object_array_length(r->tasks) >= CRAWLER_CAPACITY)
+        return fail(e, n, "Invalid or frozen code crawler registration");
+    for (size_t i = 0; i < json_object_array_length(r->tasks); i++)
+        if (!strcmp(js(json_object_array_get_idx(r->tasks, i), "code_id", ""), key))
+            return fail(e, n, "Duplicate code crawler ID");
+    json_object *copy = NULL;
+    if (json_object_deep_copy(config, &copy, NULL) != 0 || !copy)
+        return fail(e, n, "Cannot copy crawler config");
+    if (!jg(copy, "name"))
+        json_object_object_add(copy, "name", json_object_new_string(find(r, implementation)->name));
+    json_object_object_add(copy, "implementation", json_object_new_string(implementation));
+    if (crawler_validate(r, copy, e, n)) {
+        json_object_put(copy);
+        return -1;
+    }
+    json_object *task = json_object_new_object();
+    json_object_object_add(task, "code_id", json_object_new_string(key));
+    json_object_object_add(task, "config", copy);
+    json_object_array_add(r->tasks, task);
+    return 0;
+}
+int crawler_sync(CrawlerRegistry *r, Store *store, char *e, size_t n)
+{
+    if (!r || r->frozen)
+        return fail(e, n, "Synchronize code crawlers before starting scheduler");
+    return store_sync_code(store, r->tasks, e, n);
 }
 void crawler_freeze(CrawlerRegistry *r)
 {

@@ -1,5 +1,4 @@
 #include "web.h"
-#include "common/redact.h"
 #include <civetweb.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -7,9 +6,6 @@
 #include <stdio.h>
 #include <inttypes.h>
 struct Web {
-    Store *store;
-    Scheduler *scheduler;
-    CrawlerRegistry *registry;
     Status *status;
     struct mg_context *server;
     char listen[128], ui_dir[SP_PATH], token[256];
@@ -41,12 +37,6 @@ static int error_json(struct mg_connection *c, int status, const char *error)
     json_object_object_add(j, "error", json_object_new_string(error));
     return send_json(c, status, j);
 }
-static json_object *id_json(int64_t id)
-{
-    json_object *j = json_object_new_object();
-    json_object_object_add(j, "id", json_object_new_int64(id));
-    return j;
-}
 static bool token_equal(const char *a, const char *b)
 {
     size_t al = strlen(a), bl = strlen(b);
@@ -54,37 +44,6 @@ static bool token_equal(const char *a, const char *b)
     for (size_t i = 0; i < bl; i++)
         diff |= (unsigned char)(i < al ? a[i] : 0) ^ (unsigned char)b[i];
     return diff == 0;
-}
-static json_object *read_json(struct mg_connection *c, char *e, size_t cap)
-{
-    const struct mg_request_info *r = mg_get_request_info(c);
-    if (r->content_length <= 0 || r->content_length > 1048576) {
-        fail(e, cap, "JSON body must contain 1-1048576 bytes");
-        return NULL;
-    }
-    size_t len = (size_t)r->content_length;
-    char *body = malloc(len + 1);
-    if (!body)
-        return NULL;
-    size_t got = 0;
-    while (got < len) {
-        int n = mg_read(c, body + got, len - got);
-        if (n <= 0) {
-            free(body);
-            fail(e, cap, "Incomplete request body");
-            return NULL;
-        }
-        got += (size_t)n;
-    }
-    body[len] = 0;
-    if (memchr(body, 0, len)) {
-        free(body);
-        fail(e, cap, "NUL byte in JSON body");
-        return NULL;
-    }
-    json_object *j = json_parse(body, e, cap);
-    free(body);
-    return j;
 }
 static int reply_rows(struct mg_connection *c, json_object *rows, const char *error)
 {
@@ -105,189 +64,62 @@ static int handler(struct mg_connection *c, void *context)
 {
     Web *app = context;
     const struct mg_request_info *r = mg_get_request_info(c);
-    const char *path = r->local_uri, *method = r->request_method;
+    const char *path = r->local_uri;
+    bool get = !strcmp(r->request_method, "GET");
     char e[SP_ERROR] = {0};
-    bool get = !strcmp(method, "GET"), post = !strcmp(method, "POST"), put = !strcmp(method, "PUT"),
-         del = !strcmp(method, "DELETE");
     if (!strncmp(path, "/api/", 5)) {
         if (app->token[0]) {
             const char *auth = mg_get_header(c, "Authorization");
             if (!auth || strncmp(auth, "Bearer ", 7) || !token_equal(auth + 7, app->token))
                 return error_json(c, 401, "API token required");
         }
-        if (!get) {
-            const char *marker = mg_get_header(c, "X-Spider-Request");
-            if (!marker || strcmp(marker, "1"))
-                return error_json(c, 403, "X-Spider-Request: 1 required");
-        }
-        if (get && !strcmp(path, "/api/health")) {
-            json_object *j = json_object_new_object();
-            json_object_object_add(j, "version", json_object_new_string("0.1.0"));
-            json_object_object_add(j, "browser_available", json_object_new_boolean(false));
-            return send_json(c, 200, j);
-        }
-        if (get && !strcmp(path, "/api/implementations"))
-            return send_json(c, 200, crawler_definitions(app->registry));
-        if (post && !strcmp(path, "/api/preview/release")) {
-            json_object *payload = read_json(c, e, sizeof(e));
-            if (!payload)
-                return error_json(c, 400, e);
-            int rc =
-                crawler_release_preview(app->registry, js(payload, "implementation", "workflow"),
-                                        js(payload, "session_id", ""), e, sizeof(e));
-            json_object_put(payload);
-            if (rc)
-                return error_json(c, 404, e);
-            json_object *reply = json_object_new_object();
-            json_object_object_add(reply, "released", json_object_new_boolean(true));
-            return send_json(c, 200, reply);
-        }
-        if (post && (!strcmp(path, "/api/preview") || !strcmp(path, "/api/preview/step"))) {
-            json_object *payload = read_json(c, e, sizeof(e));
-            if (!payload)
-                return error_json(c, 400, e);
-            json_object *definition = jg(payload, "rule");
-            if (crawler_validate(app->registry, definition ? definition : payload, e, sizeof(e))) {
-                json_object_put(payload);
-                return error_json(c, 400, e);
-            }
-            json_object *out =
-                crawler_preview(app->registry, payload, !strcmp(path, "/api/preview/step"),
-                                scheduler_stopping(app->scheduler), e, sizeof(e));
-            json_object_put(payload);
-            return out ? send_json(c, 200, out) : error_json(c, 422, e);
+        if (!get)
+            return error_json(c, 405, "Status API is read-only");
+        if (!strcmp(path, "/api/health")) {
+            json_object *row = json_object_new_object();
+            json_object_object_add(row, "version", json_object_new_string("0.1.0"));
+            json_object_object_add(row, "read_only", json_object_new_boolean(true));
+            return send_json(c, 200, row);
         }
         if (!strcmp(path, "/api/spiders")) {
-            if (get) {
-                json_object *rows = store_spiders(app->store, e, sizeof(e));
-                return reply_rows(c, rows, e);
-            }
-            if (post) {
-                json_object *config = read_json(c, e, sizeof(e));
-                if (!config)
-                    return error_json(c, 400, e);
-                if (crawler_validate(app->registry, config, e, sizeof(e))) {
-                    json_object_put(config);
-                    return error_json(c, 400, e);
-                }
-                int64_t id = store_save_spider(app->store, 0, config, e, sizeof(e));
-                json_object_put(config);
-                return id > 0 ? send_json(c, 201, id_json(id)) : error_json(c, 500, e);
-            }
+            json_object *rows = status_spiders(app->status, e, sizeof(e));
+            return reply_rows(c, rows, e);
         }
-        if (get && !strcmp(path, "/api/runs")) {
-            json_object *rows = status_runs(
-                app->status, query_number(r->query_string, "spider_id", 0), e, sizeof(e));
+        if (!strcmp(path, "/api/runs")) {
+            int64_t spider = query_number(r->query_string, "spider_id", 0);
+            if (spider) {
+                json_object *row = status_spider(app->status, spider);
+                if (!row)
+                    return error_json(c, 404, "Code crawler not found");
+                json_object_put(row);
+            }
+            json_object *rows = status_history(app->status, spider, e, sizeof(e));
             return reply_rows(c, rows, e);
         }
         int64_t id = 0;
-        char action[80] = {0};
         int used = 0;
-        if (sscanf(path, "/api/spiders/%" SCNd64 "%n", &id, &used) == 1 && id > 0) {
-            const char *tail = path + used;
-            if (post && !strcmp(tail, "/run")) {
-                int64_t run = scheduler_submit(app->scheduler, id, e, sizeof(e));
-                return run > 0 ? send_json(c, 201, id_json(run)) : error_json(c, 409, e);
-            }
-            if (!*tail) {
-                if (get) {
-                    json_object *row = store_spider(app->store, id);
-                    return row ? send_json(c, 200, row) : error_json(c, 404, "Spider not found");
-                }
-                if (put) {
-                    json_object *config = read_json(c, e, sizeof(e));
-                    if (!config)
-                        return error_json(c, 400, e);
-                    if (crawler_validate(app->registry, config, e, sizeof(e))) {
-                        json_object_put(config);
-                        return error_json(c, 400, e);
-                    }
-                    int64_t saved = store_save_spider(app->store, id, config, e, sizeof(e));
-                    json_object_put(config);
-                    return saved > 0 ? send_json(c, 200, id_json(saved)) : error_json(c, 404, e);
-                }
-                if (del)
-                    return store_delete_spider(app->store, id, e, sizeof(e))
-                               ? error_json(c, 409, e)
-                               : send_json(c, 200, id_json(id));
-            }
+        if (sscanf(path, "/api/spiders/%" SCNd64 "%n", &id, &used) == 1 && id > 0 && !path[used]) {
+            json_object *row = status_spider(app->status, id);
+            return row ? send_json(c, 200, row) : error_json(c, 404, "Code crawler not found");
         }
         used = 0;
         if (sscanf(path, "/api/runs/%" SCNd64 "%n", &id, &used) == 1 && id > 0) {
             const char *tail = path + used;
-            if (!*tail && get) {
-                json_object *row = status_run(app->status, id);
-                return row ? send_json(c, 200, row) : error_json(c, 404, "Run not found");
-            }
-            if (post && !strcmp(tail, "/stop"))
-                return scheduler_cancel(app->scheduler, id, e, sizeof(e))
-                           ? error_json(c, 409, e)
-                           : send_json(c, 200, id_json(id));
-            if (get && !strcmp(tail, "/items")) {
-                json_object *rows = store_items(
-                    app->store, id, query_number(r->query_string, "after", 0), e, sizeof(e));
-                return reply_rows(c, rows, e);
-            }
-            if (get && !strcmp(tail, "/steps")) {
-                json_object *rows = status_steps(app->status, id, e, sizeof(e));
-                return reply_rows(c, rows, e);
-            }
-            if (get && !strncmp(tail, "/steps/", 7)) {
-                const char *start = tail + 7;
-                char *end;
-                errno = 0;
-                int64_t instance = strtoll(start, &end, 10);
-                if (*start >= '0' && *start <= '9' && !errno && !*end && instance > 0) {
-                    json_object *row = status_step(app->status, id, instance);
-                    if (!row)
-                        return error_json(c, 404, "Step instance not found in this run");
-                    json_object *run = store_run(app->store, id);
-                    json_object *safe = debug_redact(row, jg(run, "snapshot"));
-                    json_object_put(run);
-                    json_object_put(row);
-                    return send_json(c, 200, safe);
-                }
-                return error_json(c, 404, "Step instance not found in this run");
-            }
-            if (get && !strcmp(tail, "/events")) {
-                json_object *rows = status_events(app->status, id, e, sizeof(e));
-                return reply_rows(c, rows, e);
-            }
-            if (get && !strcmp(tail, "/artifacts")) {
-                json_object *rows = store_artifacts(app->store, id, e, sizeof(e));
-                for (size_t i = 0; rows && i < json_object_array_length(rows); i++)
-                    json_object_object_del(json_object_array_get_idx(rows, i), "path");
-                return reply_rows(c, rows, e);
-            }
-            if (get && !strcmp(tail, "/export")) {
-                char format[16] = {0};
-                if (r->query_string)
-                    mg_get_var(r->query_string, strlen(r->query_string), "format", format,
-                               sizeof(format));
-                bool csv = !strcmp(format, "csv");
-                char *body = NULL;
-                size_t size = 0;
-                int rc = store_export(app->store, id, csv, &body, &size, e, sizeof(e));
-                if (rc)
-                    return error_json(c, rc, e);
-                rc = send_bytes(c, 200,
-                                csv ? "text/csv; charset=utf-8" : "application/json; charset=utf-8",
-                                body, size);
-                free(body);
-                return rc;
-            }
+            if (*tail && strcmp(tail, "/events"))
+                return error_json(c, 404, "Status route not found");
+            json_object *run = status_code_run(app->status, id);
+            if (!run)
+                return error_json(c, 404, "Code crawler run not found");
+            if (!*tail)
+                return send_json(c, 200, run);
+            json_object_put(run);
+            json_object *rows = status_events(app->status, id, e, sizeof(e));
+            return reply_rows(c, rows, e);
         }
-        if (get && sscanf(path, "/api/artifacts/%" SCNd64 "/%79s", &id, action) == 2 && id > 0 &&
-            !strcmp(action, "file")) {
-            json_object *row = store_artifact(app->store, id);
-            if (!row)
-                return error_json(c, 404, "File not found");
-            mg_send_file(c, js(row, "path", ""));
-            json_object_put(row);
-            return 200;
-        }
-        return error_json(c, 404, "API route not found");
+        return error_json(c, 404, "Status route not found");
     }
+    if (!get)
+        return error_json(c, 405, "Status page is read-only");
     if (get) {
         const char *file = !strcmp(path, "/")            ? "index.html"
                            : !strcmp(path, "/app.js")    ? "app.js"
@@ -334,11 +166,9 @@ static int log_message(const struct mg_connection *c, const char *message)
     fprintf(stderr, "web: %s\n", message);
     return 1;
 }
-Web *web_start(const WebConfig *config, Store *store, Scheduler *scheduler,
-               CrawlerRegistry *registry, Status *status, char *e, size_t n)
+Web *web_start(const WebConfig *config, Status *status, char *e, size_t n)
 {
-    if (!config || !config->listen || !config->ui_directory || !store || !scheduler || !registry ||
-        !status) {
+    if (!config || !config->listen || !config->ui_directory || !status) {
         fail(e, n, "Invalid Web dependencies");
         return NULL;
     }
@@ -347,9 +177,6 @@ Web *web_start(const WebConfig *config, Store *store, Scheduler *scheduler,
         fail(e, n, "Cannot allocate Web server");
         return NULL;
     }
-    web->store = store;
-    web->scheduler = scheduler;
-    web->registry = registry;
     web->status = status;
     if (strlen(config->listen) >= sizeof(web->listen) ||
         strlen(config->ui_directory) >= sizeof(web->ui_dir) ||

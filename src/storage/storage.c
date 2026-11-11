@@ -31,7 +31,9 @@ static const char *schema =
     "CREATE TABLE IF NOT EXISTS run_events(id INTEGER PRIMARY KEY,run_id INTEGER NOT NULL "
     "REFERENCES runs(id),level TEXT NOT NULL,message TEXT NOT NULL,created_at INTEGER NOT NULL);"
     "CREATE INDEX IF NOT EXISTS requests_queue ON requests(run_id,status,id);"
-    "CREATE INDEX IF NOT EXISTS items_run ON items(run_id,id);";
+    "CREATE INDEX IF NOT EXISTS items_run ON items(run_id,id);"
+    "CREATE TABLE IF NOT EXISTS code_spiders(code_id TEXT PRIMARY KEY,spider_id INTEGER NOT NULL "
+    "UNIQUE REFERENCES spiders(id),active INTEGER NOT NULL DEFAULT 1);";
 
 /* Rebuild the two v1 tables together: foreign keys are disabled only while opening,
  * before this Store is visible to workers. Transaction rollback preserves v1. */

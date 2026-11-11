@@ -110,3 +110,38 @@ json_object *status_step(Status *s, int64_t run, int64_t step)
 {
     return store_step(s->store, run, step);
 }
+
+json_object *status_spiders(Status *s, char *e, size_t n)
+{
+    json_object *rows = store_code_spiders(s->store, e, n);
+    for (size_t i = 0; rows && i < json_object_array_length(rows); i++) {
+        json_object *row = json_object_array_get_idx(rows, i);
+        int64_t id = json_object_get_int64(jg(row, "latest_run_id"));
+        if (!id)
+            continue;
+        json_object *run = status_run(s, id);
+        json_object_object_add(row, "execution_active",
+                               json_object_new_boolean(jb(run, "execution_active", false)));
+        if (jg(run, "progress"))
+            json_object_object_add(row, "progress", json_object_get(jg(run, "progress")));
+        json_object_put(run);
+    }
+    return rows;
+}
+json_object *status_spider(Status *s, int64_t id)
+{
+    return store_code_spider(s->store, id);
+}
+json_object *status_history(Status *s, int64_t id, char *e, size_t n)
+{
+    return store_code_runs(s->store, id, e, n);
+}
+json_object *status_code_run(Status *s, int64_t id)
+{
+    if (!store_code_has_run(s->store, id))
+        return NULL;
+    json_object *run = status_run(s, id);
+    if (run)
+        json_object_object_del(run, "snapshot");
+    return run;
+}

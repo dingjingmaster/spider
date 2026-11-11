@@ -8,6 +8,11 @@ Status *status_create(Store *);
 void status_destroy(Status *);
 void status_progress(Status *, int64_t run, const char *phase, int64_t received, int64_t total);
 void status_forget(Status *, int64_t run);
+/* Read-only views restricted to tasks present in the current code catalog. */
+json_object *status_spiders(Status *, char *, size_t);
+json_object *status_spider(Status *, int64_t);
+json_object *status_history(Status *, int64_t spider, char *, size_t);
+json_object *status_code_run(Status *, int64_t run);
 json_object *status_run(Status *, int64_t);
 json_object *status_runs(Status *, int64_t spider, char *, size_t);
 json_object *status_events(Status *, int64_t run, char *, size_t);
