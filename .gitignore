@@ -1,11 +1,12 @@
-/build*/
 /data/
+/.idea/
+/build*/
 /.cache/
-/.superpowers/
+/.vscode/
+/.qtcreator/
 /.worktrees/
-.idea/
-.vscode/
-__pycache__/
+/__pycache__/
+/.superpowers/
 *.pyc
 *.o
 *.a
