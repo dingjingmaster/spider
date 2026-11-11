@@ -18,7 +18,8 @@ static json_object *config(void)
     return parse("{\"artist_whitelist\":[],\"artist_whitelist_strict\":false,"
                  "\"exclude_keywords\":[\"有声书\",\"评书\",\"相声\",\"电台\"],"
                  "\"exclude_collections\":[\"radio\",\"podcasts\"],"
-                 "\"format_prefer\":[\"VBR MP3\",\"128Kbps MP3\",\"MP3\",\"Flac\",\"24bit Flac\"],"
+                 "\"format_prefer\":[\"24bit Flac\",\"Flac\",\"320Kbps MP3\",\"VBR MP3\","
+                 "\"128Kbps MP3\",\"MP3\",\"Ogg Vorbis\"],"
                  "\"min_score\":3,\"min_seconds\":30,\"max_seconds\":1200,\"min_bytes\":20480}");
 }
 
@@ -72,8 +73,10 @@ static void test_audio_and_length(void)
     assert(archive_is_audio("24bit Flac", "a.flac"));
     assert(!archive_is_audio("PNG", "a.png"));
     assert(!archive_is_audio("Spectrogram", "a_spectrogram.png"));
-    json_object *prefer = parse("[\"VBR MP3\",\"MP3\",\"Flac\",\"24bit Flac\"]");
-    assert(archive_format_rank("VBR MP3", prefer) < archive_format_rank("24bit Flac", prefer));
+    json_object *prefer =
+        parse("[\"24bit Flac\",\"Flac\",\"320Kbps MP3\",\"VBR MP3\",\"128Kbps MP3\",\"MP3\"]");
+    assert(archive_format_rank("24bit Flac", prefer) < archive_format_rank("VBR MP3", prefer));
+    assert(archive_format_rank("Flac", prefer) < archive_format_rank("128Kbps MP3", prefer));
     json_object_put(prefer);
     assert(fabs(archive_parse_length("5:30") - 330) < 0.01);
     assert(fabs(archive_parse_length("1:02:03") - 3723) < 0.01);
@@ -107,18 +110,18 @@ static void test_select_files(void)
     assert(archive_select_files(root, cfg, &selected, error, sizeof(error)) == 0);
     assert(json_object_is_type(selected, json_type_array));
     assert(json_object_array_length(selected) == 2);
-    bool mp3 = false, thai = false;
+    bool flac = false, thai = false;
     for (size_t i = 0; i < json_object_array_length(selected); i++) {
         json_object *entry = json_object_array_get_idx(selected, i);
         const char *key = js(entry, "__key", "");
         if (!strcmp(key, "赵雷 - 成都.flac")) {
-            mp3 = true;
-            assert(!strcmp(js(entry, "format", ""), "VBR MP3"));
+            flac = true;
+            assert(!strcmp(js(entry, "format", ""), "24bit Flac"));
         }
         if (strstr(key, "เพลงไทย"))
             thai = true;
     }
-    assert(mp3 && thai);
+    assert(flac && thai);
     json_object_put(selected);
     json_object_put(cfg);
     json_object_put(root);

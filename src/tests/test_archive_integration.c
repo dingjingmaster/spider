@@ -128,7 +128,7 @@ static json_object *config(const char *root, unsigned short port, const char *mo
              "\"queries\":[\"mediatype:audio AND subject:mandopop\"],"
              "\"artist_whitelist\":[],\"artist_whitelist_strict\":false,"
              "\"exclude_keywords\":[\"有声书\"],\"exclude_collections\":[\"radio\"],"
-             "\"format_prefer\":[\"VBR MP3\",\"MP3\",\"Flac\"],"
+             "\"format_prefer\":[\"24bit Flac\",\"Flac\",\"VBR MP3\",\"MP3\"],"
              "\"min_score\":3,\"min_seconds\":30,\"max_seconds\":1200,\"min_bytes\":20480,"
              "\"page_size\":100,\"max_pages\":1,\"max_items\":10,\"download_limit\":10,"
              "\"delay_ms\":0,\"max_bytes\":1048576}",
@@ -191,7 +191,7 @@ int main(void)
     assert(!strcmp(js(row, "title", ""), "测试歌曲"));
     assert(!strcmp(js(row, "decision", ""), "include"));
     char expected[512];
-    snprintf(expected, sizeof(expected), "%s/测试歌手/测试歌曲.mp3", root);
+    snprintf(expected, sizeof(expected), "%s/测试歌手/测试歌手 - 测试歌曲.flac", root);
     assert(!strcmp(js(row, "target_path", ""), expected));
     json_object_put(queue);
 
@@ -216,6 +216,20 @@ int main(void)
     }
     assert(downloaded);
     json_object_put(summary);
+
+    json_object *events = store_events(store, run, error, sizeof(error));
+    assert(events && json_object_array_length(events) > 0);
+    bool http_ok = false, download_event = false;
+    for (size_t i = 0; i < json_object_array_length(events); i++) {
+        json_object *event = json_object_array_get_idx(events, i);
+        const char *message = js(event, "message", "");
+        if (strstr(message, "HTTP 200"))
+            http_ok = true;
+        if (strstr(message, "downloaded"))
+            download_event = true;
+    }
+    assert(http_ok && download_event);
+    json_object_put(events);
 
     assert(pthread_join(fixture.thread, NULL) == 0);
     download_destroy(downloads);

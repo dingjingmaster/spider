@@ -69,7 +69,7 @@ json_object *store_events(Store *s, int64_t run, char *e, size_t n)
 {
     return store_query(s,
                        "SELECT id,level,message,created_at FROM run_events WHERE run_id=? "
-                       "ORDER BY id DESC LIMIT 200",
+                       "ORDER BY id DESC LIMIT 10",
                        run, e, n);
 }
 json_object *store_steps(Store *s, int64_t run, char *e, size_t n)

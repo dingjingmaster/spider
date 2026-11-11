@@ -317,6 +317,7 @@ int download_save(DownloadClient *client, const DownloadRequest *request, Downlo
                                                    (int64_t)response.size)
                                  : 0;
     result->bytes = (int64_t)response.size;
+    result->http_status = response.status;
     download_response_free(&response);
     if (id < 0) {
         if (!existed)

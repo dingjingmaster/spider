@@ -148,6 +148,7 @@ static void test_absolute_root_and_nested_path(void)
     snprintf(expected, sizeof(expected), "%s/华语/邓丽君/甜蜜蜜.mp3", root);
     assert(!strcmp(file.path, expected));
     assert(file.bytes == 5);
+    assert(file.http_status == 200);
     assert(!strcmp(read_file(expected), "first"));
     download_destroy(client);
 }

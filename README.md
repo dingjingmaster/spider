@@ -35,9 +35,10 @@ cmake --build build -j
 `spiders/archive_org/` 注册实现 `archive-org`，并登记任务 `archive-org-chinese-music`。默认 `enabled:false`、`mode:scan`；在 `src/spiders/archive_org/archive_org.c` 修改默认配置后重新编译启动。
 
 - `mode:"scan"`：按 `queries` 分页搜索，逐条读取 metadata，过滤后把候选写入通用下载目录，不下载音频。
-- `mode:"download"`：从 `download_items` 取 `decision=include` 的队列，按 `download_root` + `artist/title` 落盘，默认 `on_exists=skip`。
+- `mode:"download"`：从 `download_items` 取 `decision=include` 的队列，按 `download_root/歌手/原文件名.ext` 落盘，默认 `on_exists=skip`。同一条目里同时存在多种格式时，按 `format_prefer` 选质量最高的：24bit Flac → Flac → 320Kbps MP3 → VBR MP3 → 128Kbps MP3 → MP3 → Ogg Vorbis。
 - 过滤信号：标题/creator/文件名的中文字符占比、subject/language、歌手白名单、排除关键词与 collection、时长和大小。大合集里没有中文文件名、也未命中白名单的条目会被拒绝。
 - `download_root` 必须是绝对路径；`download_limit` 控制单次下载数量；`delay_ms` 控制请求间隔；`max_items` 和 `max_pages` 用于先小批量验证。
+- 运行详情顶部实时显示当前请求的 URL 和返回码（`GET ...` → `HTTP 200 ...` / `warning`）；执行日志保留最近 10 条，搜索、metadata 和下载请求都会记录。
 - 结果位于 `download_sources`、`download_items`、`music_tracks`，可直接查询 `music_downloads` 视图。
 
 ## 调度
@@ -97,7 +98,7 @@ SQLite 使用 WAL、外键和短事务。核心 `user_version` 为 4，新增的
 | `/api/spiders/{id}` | 当前代码任务的状态摘要 |
 | `/api/runs?spider_id={id}` | 当前代码任务最近 200 次运行 |
 | `/api/runs/{id}` | 执行状态、时间、错误、结果数和进度 |
-| `/api/runs/{id}/events` | 最近 200 条运行事件 |
+| `/api/runs/{id}/events` | 最近 10 条运行事件 |
 | `POST /api/spiders/{id}/run` | 手动提交一次运行，返回 `{"id": run_id}`；需要 `X-Spider-Request: 1`。任务即使 `enabled:false` 也可以手动运行。 |
 
 其余写操作仍返回 405；手动运行不改变定时计划。历史数据库中已移除的任务继续保留，但不出现在当前状态看板中。

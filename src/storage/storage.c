@@ -485,6 +485,31 @@ done:
     pthread_mutex_unlock(&s->mutex);
     return rc;
 }
+int store_event(Store *s, int64_t run, const char *level, const char *message, char *e, size_t n)
+{
+    if (!s || !level || !message)
+        return fail(e, n, "Invalid run event");
+    pthread_mutex_lock(&s->mutex);
+    sqlite3_stmt *q = prepare(
+        s, "INSERT INTO run_events(run_id,level,message,created_at) SELECT ?1,?2,?3,?4 WHERE "
+           "EXISTS(SELECT 1 FROM runs WHERE id=?1)");
+    int rc = -1;
+    if (!q)
+        fail(e, n, "SQLite: %s", sqlite3_errmsg(s->db));
+    else {
+        sqlite3_bind_int64(q, 1, run);
+        txt(q, 2, level);
+        txt(q, 3, message);
+        sqlite3_bind_int64(q, 4, now_ms());
+        if (sqlite3_step(q) != SQLITE_DONE || !sqlite3_changes(s->db))
+            fail(e, n, "Cannot record run event");
+        else
+            rc = 0;
+        sqlite3_finalize(q);
+    }
+    pthread_mutex_unlock(&s->mutex);
+    return rc;
+}
 int64_t store_add_artifact(Store *s, int64_t run, const char *url, const char *path,
                            const char *hash, int64_t bytes)
 {

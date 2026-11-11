@@ -5,7 +5,7 @@
 #include <string.h>
 typedef struct Progress {
     int64_t run, received, total;
-    char phase[80];
+    char phase[1024];
     struct Progress *next;
 } Progress;
 struct Status {

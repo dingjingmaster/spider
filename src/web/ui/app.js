@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {spiders: [], runs: [], spider: null, run: null, token: sessionStorage.getItem('spider-token') || '', refreshSequence: 0, refreshAttempt: 0, historySequence: 0, runSequence: 0};
+const state = {spiders: [], runs: [], spider: null, run: null, token: sessionStorage.getItem('spider-token') || '', refreshSequence: 0, refreshAttempt: 0, historySequence: 0, runSequence: 0, followLatest: true};
 const statuses = {idle: '未执行', queued: '排队中', running: '运行中', succeeded: '成功', failed: '失败', partial: '部分成功', cancelled: '已取消'};
 function node(tag, text, cls) { const value = document.createElement(tag); if (text !== undefined) value.textContent = text; if (cls) value.className = cls; return value; }
 function time(value) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(); }
@@ -39,6 +39,7 @@ async function runSpider(row) {
     $('notice').textContent = `已提交运行 #${result.id}`;
     $('notice').hidden = false;
     state.spider = row.id;
+    state.followLatest = true;
     state.refreshSequence++;
     await refreshDashboard();
   } catch (error) { notify(error); }
@@ -72,7 +73,7 @@ function renderHistory() {
   if (!state.runs.length) { const tr = node('tr'); const cell = node('td', '尚无执行记录', 'empty'); cell.colSpan = 6; tr.append(cell); $('runs').append(tr); }
   for (const row of state.runs) {
     const tr = node('tr', undefined, `selectable${row.id === state.run ? ' selected' : ''}`);
-    const id = node('td'); const choose = node('button', `#${row.id}`, 'link-button'); choose.onclick = () => selectRun(row.id).catch(notify); id.append(choose);
+    const id = node('td'); const choose = node('button', `#${row.id}`, 'link-button'); choose.onclick = () => { state.followLatest = false; selectRun(row.id).catch(notify); }; id.append(choose);
     const status = node('td'); status.append(badge(row));
     tr.append(id, status, node('td', time(row.started_at)), node('td', time(row.finished_at)), node('td', duration(row)), node('td', String(row.item_count || 0)));
     $('runs').append(tr);
@@ -86,7 +87,7 @@ function renderRun(run, events) {
   $('run-error').textContent = run.error || '';
   const progress = run.progress;
   $('run-progress').textContent = run.execution_active && run.status === 'cancelled' ? '正在退出，等待当前操作结束。' : progress ? `${progress.phase || '执行中'} · 已传输 ${(progress.received / 1024).toFixed(1)} KiB${progress.total > 0 ? ` / ${(progress.total / 1024).toFixed(1)} KiB` : ''}` : '';
-  $('events').textContent = events.slice().reverse().map(event => `${time(event.created_at)} [${event.level}] ${event.message}`).join('\n') || '暂无日志';
+  $('events').textContent = events.slice(0, 10).reverse().map(event => `${time(event.created_at)} [${event.level}] ${event.message}`).join('\n') || '暂无日志';
 }
 async function selectRun(id) {
   const spider = state.spider; state.run = id; const sequence = ++state.runSequence; renderHistory();
@@ -100,12 +101,13 @@ async function loadHistory() {
   const rows = await api(`/api/runs?spider_id=${spider}`);
   if (state.spider !== spider || state.historySequence !== sequence) return;
   state.runs = rows;
+  if (state.followLatest && rows.length) state.run = rows[0].id;
   if (!rows.some(row => row.id === state.run)) state.run = rows[0]?.id ?? null;
   renderHistory();
   if (state.run !== null) await selectRun(state.run); else { state.runSequence++; $('run-detail').hidden = true; }
 }
 async function selectSpider(id) {
-  state.spider = id; state.run = null; state.runSequence++; $('run-detail').hidden = true; renderSpiders(); await loadHistory();
+  state.spider = id; state.run = null; state.followLatest = true; state.runSequence++; $('run-detail').hidden = true; renderSpiders(); await loadHistory();
 }
 async function refreshDashboard() {
   const sequence = ++state.refreshSequence;

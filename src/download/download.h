@@ -20,6 +20,7 @@ typedef struct {
 } DownloadRequest;
 typedef struct {
     int64_t id, bytes;
+    long http_status;
     char path[SP_PATH], sha256[65];
 } DownloadFile;
 /* Client owns its directory and publication lock. It has no database dependency.

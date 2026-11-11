@@ -24,6 +24,8 @@ json_object *store_runs(Store *, int64_t, char *, size_t);
 json_object *store_run(Store *, int64_t);
 json_object *store_items(Store *, int64_t, int64_t, char *, size_t);
 json_object *store_events(Store *, int64_t, char *, size_t);
+int store_event(Store *, int64_t run_id, const char *level, const char *message, char *error,
+                size_t cap);
 json_object *store_steps(Store *, int64_t, char *, size_t);
 json_object *store_step(Store *, int64_t, int64_t);
 json_object *store_artifacts(Store *, int64_t, char *, size_t);

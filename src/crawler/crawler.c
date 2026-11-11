@@ -183,7 +183,22 @@ int crawler_fetch(CrawlerContext *c, json_object *options, const char *url, Http
 {
     if (crawler_cancelled(c))
         return fail(e, n, "Cancelled");
+    if (c->status)
+        status_progress(c->status, c->run_id, url, 0, 0);
     int rc = download_fetch(options, url, NULL, crawler_cancelled, c, c->session, response, e, n);
+    char message[SP_PATH + 256];
+    if (rc)
+        snprintf(message, sizeof(message), "GET %s failed: %s", url, e);
+    else
+        snprintf(message, sizeof(message), "HTTP %ld %s", response->status, url);
+    if (c->status)
+        status_progress(c->status, c->run_id, message, 0, 0);
+    if (c->store && c->run_id) {
+        char ignored[SP_ERROR] = {0};
+        const char *level =
+            (!rc && response->status >= 200 && response->status < 400) ? "info" : "notice";
+        store_event(c->store, c->run_id, level, message, ignored, sizeof(ignored));
+    }
     char saved[SP_ERROR] = {0};
     if (persist_session(c, saved, sizeof(saved)))
         return fail(e, n, "%s", saved);
@@ -199,6 +214,8 @@ int crawler_save_file(CrawlerContext *c, json_object *options, const char *url, 
 {
     if (crawler_cancelled(c))
         return fail(e, n, "Cancelled");
+    if (c->status)
+        status_progress(c->status, c->run_id, url, 0, 0);
     json_object *rows = store_artifacts(c->store, c->run_id, e, n);
     if (!rows)
         return -1;
@@ -210,6 +227,14 @@ int crawler_save_file(CrawlerContext *c, json_object *options, const char *url, 
             file->bytes = json_object_get_int64(jg(a, "bytes"));
             snprintf(file->path, sizeof(file->path), "%s", js(a, "path", ""));
             snprintf(file->sha256, sizeof(file->sha256), "%s", js(a, "sha256", ""));
+            char message[SP_PATH + 256];
+            snprintf(message, sizeof(message), "reused %s -> %s", url, file->path);
+            if (c->status)
+                status_progress(c->status, c->run_id, message, 0, 0);
+            if (c->store && c->run_id) {
+                char ignored[SP_ERROR] = {0};
+                store_event(c->store, c->run_id, "info", message, ignored, sizeof(ignored));
+            }
             json_object_put(rows);
             return 0;
         }
@@ -236,6 +261,19 @@ int crawler_save_file(CrawlerContext *c, json_object *options, const char *url, 
                                .record_context = c};
     int rc = download_save(c->downloads, &request, file, e, n);
     json_object_put(merged);
+    char message[SP_PATH + 256];
+    if (rc)
+        snprintf(message, sizeof(message), "download %s failed: %s", url, e);
+    else
+        snprintf(message, sizeof(message), "HTTP %ld downloaded %s -> %s (%lld bytes)",
+                 file->http_status, url, file->path, (long long)file->bytes);
+    if (c->status)
+        status_progress(c->status, c->run_id, message, 0, 0);
+    if (c->store && c->run_id) {
+        char ignored[SP_ERROR] = {0};
+        store_event(c->store, c->run_id, rc ? "notice" : "info", message, ignored,
+                    sizeof(ignored));
+    }
     char saved[SP_ERROR] = {0};
     if (persist_session(c, saved, sizeof(saved)))
         return fail(e, n, "%s", saved);

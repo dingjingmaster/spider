@@ -37,8 +37,8 @@ static const char *ARCHIVE_DEFAULT_CONFIG =
     "\"新闻\",\"访谈\",\"播客\",\"音效\",\"铃声\"],"
     "\"exclude_collections\":[\"radio\",\"radioprograms\",\"podcasts\",\"librivoxaudio\","
     "\"stream_only\",\"audio_bookspoetry\"],"
-    "\"format_prefer\":[\"VBR MP3\",\"128Kbps MP3\",\"MP3\",\"Ogg Vorbis\",\"Flac\","
-    "\"24bit Flac\",\"WAVE\",\"Apple Lossless\"],"
+    "\"format_prefer\":[\"24bit Flac\",\"Flac\",\"320Kbps MP3\",\"VBR MP3\",\"128Kbps MP3\","
+    "\"MP3\",\"Ogg Vorbis\",\"WAVE\",\"Apple Lossless\"],"
     "\"min_score\":3,\"min_seconds\":30,\"max_seconds\":1200,\"min_bytes\":20480,"
     "\"page_size\":500,\"max_pages\":50,\"max_items\":0,\"download_limit\":100,"
     "\"delay_ms\":700,\"max_bytes\":33554432,"
@@ -293,15 +293,23 @@ static void file_extension(const char *file_name, char *out, size_t cap)
 
 static void relative_path(json_object *row, char *out, size_t cap)
 {
-    char artist[256], title[512], extension[32];
+    char artist[256], file[1024];
     safe_component(js(row, "artist", ""), artist, sizeof(artist));
-    safe_component(js(row, "title", ""), title, sizeof(title));
-    file_extension(js(row, "file_name", ""), extension, sizeof(extension));
+    const char *file_name = js(row, "file_name", "");
+    const char *base = strrchr(file_name, '/');
+    base = base ? base + 1 : file_name;
+    safe_component(base, file, sizeof(file));
     if (!strcmp(artist, "unknown"))
         snprintf(artist, sizeof(artist), "未知歌手");
-    if (!strcmp(title, "unknown"))
-        snprintf(title, sizeof(title), "未命名");
-    snprintf(out, cap, "%s/%s%s", artist, title, extension);
+    if (!strcmp(file, "unknown")) {
+        char title[512], extension[32];
+        safe_component(js(row, "title", ""), title, sizeof(title));
+        file_extension(file_name, extension, sizeof(extension));
+        if (!strcmp(title, "unknown"))
+            snprintf(title, sizeof(title), "未命名");
+        snprintf(file, sizeof(file), "%s%s", title, extension);
+    }
+    snprintf(out, cap, "%s/%s", artist, file);
 }
 
 static bool relative_from_target(const char *root, const char *target, char *out, size_t cap)
@@ -417,13 +425,20 @@ static json_object *item_json(json_object *config, json_object *item, json_objec
     safe_component(artist, relative, sizeof(relative));
     if (!strcmp(relative, "unknown"))
         snprintf(relative, sizeof(relative), "未知歌手");
-    char safe_title[512], extension[32];
-    safe_component(title, safe_title, sizeof(safe_title));
-    if (!strcmp(safe_title, "unknown"))
-        snprintf(safe_title, sizeof(safe_title), "未命名");
-    file_extension(file_name, extension, sizeof(extension));
+    const char *base = strrchr(file_name, '/');
+    base = base ? base + 1 : file_name;
+    char safe_file[1024];
+    safe_component(base, safe_file, sizeof(safe_file));
+    if (!strcmp(safe_file, "unknown")) {
+        char safe_title[512], extension[32];
+        safe_component(title, safe_title, sizeof(safe_title));
+        if (!strcmp(safe_title, "unknown"))
+            snprintf(safe_title, sizeof(safe_title), "未命名");
+        file_extension(file_name, extension, sizeof(extension));
+        snprintf(safe_file, sizeof(safe_file), "%s%s", safe_title, extension);
+    }
     size_t used = strlen(relative);
-    snprintf(relative + used, sizeof(relative) - used, "/%s%s", safe_title, extension);
+    snprintf(relative + used, sizeof(relative) - used, "/%s", safe_file);
     char target[SP_PATH];
     size_t root_len = strlen(download_root);
     snprintf(target, sizeof(target), "%s%s%s", download_root,

@@ -138,8 +138,9 @@ bool archive_is_audio(const char *format, const char *name)
 
 int archive_format_rank(const char *format, json_object *prefer)
 {
-    static const char *defaults[] = {"VBR MP3", "128Kbps MP3", "MP3", "Ogg Vorbis",
-                                     "Flac", "24bit Flac", "WAVE", "Apple Lossless"};
+    static const char *defaults[] = {"24bit Flac", "Flac", "320Kbps MP3", "VBR MP3",
+                                     "128Kbps MP3", "MP3", "Ogg Vorbis", "WAVE",
+                                     "Apple Lossless"};
     if (!format)
         return 100;
     if (prefer && json_object_is_type(prefer, json_type_array)) {
@@ -148,15 +149,13 @@ int archive_format_rank(const char *format, json_object *prefer)
             if (!json_object_is_type(value, json_type_string))
                 continue;
             const char *candidate = json_object_get_string(value);
-            if (archive_text_contains_ci(format, candidate) ||
-                archive_text_contains_ci(candidate, format))
+            if (archive_text_contains_ci(format, candidate))
                 return (int)i;
         }
         return 100;
     }
     for (size_t i = 0; i < sizeof(defaults) / sizeof(*defaults); i++)
-        if (archive_text_contains_ci(format, defaults[i]) ||
-            archive_text_contains_ci(defaults[i], format))
+        if (archive_text_contains_ci(format, defaults[i]))
             return (int)i;
     return 100;
 }
