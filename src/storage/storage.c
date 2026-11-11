@@ -79,6 +79,54 @@ static const char *migration_v2 =
     "DEFAULT '');"
     "PRAGMA user_version=2;";
 
+static const char *migration_v4 =
+    "CREATE TABLE IF NOT EXISTS download_sources("
+    "id INTEGER PRIMARY KEY,spider_code TEXT NOT NULL,source TEXT NOT NULL,media_type TEXT NOT NULL,"
+    "identifier TEXT NOT NULL,site_base_url TEXT,item_url TEXT,item_type TEXT,title TEXT,creator TEXT,"
+    "subject TEXT,collection TEXT,tags TEXT,language TEXT,region TEXT,license TEXT,rights TEXT,"
+    "cover_url TEXT,description TEXT,server TEXT,dir TEXT,file_count INTEGER,metadata_json TEXT,"
+    "extra_json TEXT,added_at INTEGER,scanned_at INTEGER NOT NULL,created_at INTEGER NOT NULL,"
+    "updated_at INTEGER NOT NULL,UNIQUE(spider_code,source,media_type,identifier));"
+    "CREATE TABLE IF NOT EXISTS download_items("
+    "id INTEGER PRIMARY KEY,source_id INTEGER NOT NULL REFERENCES download_sources(id) ON DELETE "
+    "CASCADE,spider_code TEXT NOT NULL,media_type TEXT NOT NULL,logical_key TEXT NOT NULL,"
+    "original_name TEXT,file_name TEXT NOT NULL,download_url TEXT NOT NULL UNIQUE,direct_url TEXT,"
+    "page_url TEXT,download_kind TEXT,options_json TEXT,auth_key TEXT,content_type TEXT,"
+    "file_source TEXT,format TEXT,format_rank INTEGER,bytes INTEGER,remote_sha1 TEXT,"
+    "remote_md5 TEXT,remote_crc32 TEXT,expected_sha256 TEXT,content_key TEXT,role TEXT,"
+    "sequence REAL,part_index INTEGER DEFAULT 0,part_count INTEGER DEFAULT 1,group_key TEXT,"
+    "score INTEGER NOT NULL DEFAULT 0,decision TEXT NOT NULL DEFAULT 'pending',reasons TEXT,"
+    "curated INTEGER NOT NULL DEFAULT 0,notes TEXT,target_path TEXT,status TEXT NOT NULL DEFAULT "
+    "'pending',attempts INTEGER NOT NULL DEFAULT 0,error TEXT,http_status INTEGER,retry_after "
+    "INTEGER,next_attempt_at INTEGER,local_sha256 TEXT,local_bytes INTEGER,downloaded_at INTEGER,"
+    "last_run_id INTEGER,extra_json TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,"
+    "UNIQUE(source_id,logical_key));"
+    "CREATE TABLE IF NOT EXISTS music_tracks("
+    "id INTEGER PRIMARY KEY REFERENCES download_items(id) ON DELETE CASCADE,artist TEXT,title TEXT,"
+    "album TEXT,track_no INTEGER,seconds REAL,bitrate INTEGER);"
+    "CREATE TABLE IF NOT EXISTS novel_files("
+    "id INTEGER PRIMARY KEY REFERENCES download_items(id) ON DELETE CASCADE,author TEXT,title TEXT,"
+    "series TEXT,chapter_no INTEGER,language TEXT,word_count INTEGER);"
+    "CREATE INDEX IF NOT EXISTS download_items_queue ON download_items(spider_code,media_type,"
+    "status,decision,score DESC);"
+    "CREATE INDEX IF NOT EXISTS download_items_source ON download_items(source_id);"
+    "CREATE INDEX IF NOT EXISTS download_items_sha1 ON download_items(remote_sha1);"
+    "CREATE INDEX IF NOT EXISTS music_tracks_artist ON music_tracks(artist);"
+    "CREATE INDEX IF NOT EXISTS novel_files_author ON novel_files(author);"
+    "CREATE VIEW IF NOT EXISTS music_downloads AS SELECT d.*,s.identifier AS item_identifier,"
+    "s.item_url,s.title AS item_title,s.creator AS item_creator,s.language AS item_language,"
+    "s.subject,s.collection,s.tags,s.site_base_url,s.item_type,s.server,s.dir,s.file_count,"
+    "s.cover_url,s.license,s.rights,s.region,m.artist,m.title,m.album,m.track_no,m.seconds,"
+    "m.bitrate FROM download_items d JOIN download_sources s ON s.id=d.source_id JOIN music_tracks "
+    "m ON m.id=d.id WHERE d.media_type='music';"
+    "CREATE VIEW IF NOT EXISTS novel_downloads AS SELECT d.*,s.identifier AS item_identifier,"
+    "s.item_url,s.title AS item_title,s.creator AS item_creator,s.language AS item_language,"
+    "s.subject,s.collection,s.tags,s.site_base_url,s.item_type,s.server,s.dir,s.file_count,"
+    "s.cover_url,s.license,s.rights,s.region,n.author,n.title,n.series,n.chapter_no,n.language,"
+    "n.word_count FROM download_items d JOIN download_sources s ON "
+    "s.id=d.source_id JOIN novel_files n ON n.id=d.id WHERE d.media_type='novel';"
+    "PRAGMA user_version=4;";
+
 static sqlite3_stmt *prepare(Store *s, const char *sql)
 {
     sqlite3_stmt *q = NULL;
@@ -225,7 +273,7 @@ int store_open(Store *s, const char *path, char *e, size_t n)
     sqlite3_finalize(q);
     if (e && n)
         *e = 0;
-    if (version > 3) {
+    if (version > 4) {
         fail(e, n, "Unsupported SQLite schema version: %d", version);
         store_close(s);
         return -1;
@@ -235,7 +283,8 @@ int store_open(Store *s, const char *path, char *e, size_t n)
     if (exec_locked(s,
                     "PRAGMA foreign_keys=OFF;PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;") ||
         exec_locked(s, "BEGIN IMMEDIATE") || exec_locked(s, schema) ||
-        (version < 2 && exec_locked(s, migration_v2)) || (version < 3 && migrate_v3(s, e, n)))
+        (version < 2 && exec_locked(s, migration_v2)) || (version < 3 && migrate_v3(s, e, n)) ||
+        (version < 4 && exec_locked(s, migration_v4)))
         goto failed;
     if (exec_locked(s, "UPDATE runs SET status='cancelled',finished_at=strftime('%s','now')*1000 "
                        "WHERE status IN('queued','running') AND cancel_requested=1;"

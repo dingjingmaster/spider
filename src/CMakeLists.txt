@@ -10,6 +10,7 @@ target_link_libraries(civetweb PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 add_library(spider_core STATIC
   common/common.c common/redact.c rule/rule.c rule/private/workflow.c rule/private/data.c rule/private/upgrade.c
   parser/parser.c storage/storage.c storage/private/workflow.c storage/private/operations.c storage/private/export.c storage/private/catalog.c
+  storage/private/downloads.c
   download/download.c download/private/http.c download/private/session.c
   crawler/crawler.c status/status.c scheduler/scheduler.c spiders/spiders.c
   spiders/workflow/workflow.c spiders/workflow/private/engine.c spiders/workflow/private/preview.c)
@@ -73,6 +74,10 @@ add_executable(test_code_catalog tests/test_code_catalog.c)
 target_link_libraries(test_code_catalog PRIVATE spider_core)
 target_compile_options(test_code_catalog PRIVATE -UNDEBUG)
 add_test(NAME code_catalog COMMAND test_code_catalog)
+add_executable(test_download_catalog tests/test_download_catalog.c)
+target_link_libraries(test_download_catalog PRIVATE spider_core)
+target_compile_options(test_download_catalog PRIVATE -UNDEBUG)
+add_test(NAME download_catalog COMMAND test_download_catalog)
 add_executable(spider_status_fixture tests/status_fixture.c web/web.c)
 target_link_libraries(spider_status_fixture PRIVATE spider_core civetweb)
 target_compile_options(spider_status_fixture PRIVATE -Wall -Wextra -Wpedantic -Wshadow)

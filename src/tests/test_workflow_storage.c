@@ -20,8 +20,8 @@ static void migration(void)
     Store s;
     char e[SP_ERROR] = "";
     assert(store_open(&s, ":memory:", e, sizeof(e)) == 0);
-    /* Fresh stores use workflow-only migration version 3. */
-    assert(scalar(&s, "PRAGMA user_version") == 3);
+    /* Fresh stores use the current catalog migration version. */
+    assert(scalar(&s, "PRAGMA user_version") == 4);
     assert(scalar(&s, "SELECT count(*) FROM sessions") == 0);
     store_close(&s);
 }
@@ -216,7 +216,7 @@ static void legacy_migration(void)
     sqlite3_close(db);
     s.db = NULL;
     assert(!store_open(&s, path, e, sizeof(e)));
-    assert(scalar(&s, "PRAGMA user_version") == 3);
+    assert(scalar(&s, "PRAGMA user_version") == 4);
     assert(scalar(&s, "SELECT count(*) FROM spiders WHERE id=1 AND version=2 AND "
                       "json_extract(rule_json,'$.schema_version')=2") == 1);
     assert(scalar(&s, "SELECT count(*) FROM runs WHERE id=1 AND snapshot='{}' AND version=1 AND "

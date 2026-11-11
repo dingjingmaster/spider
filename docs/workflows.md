@@ -4,7 +4,7 @@
 
 下文中的预览与历史 HTTP 示例是 tests/support 引擎测试夹具的协议，只有测试程序提供这些路由，不属于产品 Web API。工作流运行数据和规则格式继续用于恢复及引擎回归验证。
 
-JSON 工作流使用 `schema_version: 2`。SQLite 核心 `user_version=3`，旧定义升级和历史快照保持原有边界；启动代码目录同步之后，旧网页任务不参与调度。
+JSON 工作流使用 `schema_version: 2`。SQLite 核心 `user_version=4`，旧定义升级和历史快照保持原有边界；启动代码目录同步之后，旧网页任务不参与调度。
 
 ## 定义与执行
 

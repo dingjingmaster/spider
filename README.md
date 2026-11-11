@@ -68,10 +68,10 @@ src/
 
 默认数据目录为启动位置的 `./data`，可用 `--data-dir` 指定：
 
-- `spider.db`：代码任务目录、历史配置/版本、运行、检查点、HTTP 尝试、结果、文件元数据和事件。
+- `spider.db`：代码任务目录、历史配置/版本、运行、检查点、HTTP 尝试、结果、文件元数据和事件；另含通用下载目录 `download_sources`（条目/合集）、`download_items`（每个可下载文件、URL、状态、重试）、`music_tracks` / `novel_files`（类型明细）及 `music_downloads` / `novel_downloads` 视图。
 - `downloads/`：默认按运行 ID＋SHA-256 命名为 `.bin`。爬虫可在下载参数中给出 `download_root`（必须是绝对路径）和 `path`（相对 `download_root` 的路径，含文件名），模块会递归创建父目录并按该路径保存；`on_exists` 支持 `skip`（有 `path` 时默认）、`overwrite`（无 `path` 时的默认）和 `unique`。爬虫顶层配置里的 `download_root`、`on_exists` 会被 `crawler_save_file` 自动继承。
 
-SQLite 使用 WAL、外键和短事务。核心 `user_version` 为 3，新增的 `code_spiders` 是启动时自动创建的辅助映射表。旧定义迁移规则保留；同步当前代码目录后，未注册的历史任务不再参与调度。更新前应停止服务并备份数据目录。
+SQLite 使用 WAL、外键和短事务。核心 `user_version` 为 4，新增的 `code_spiders` 是启动时自动创建的辅助映射表。旧定义迁移规则保留；同步当前代码目录后，未注册的历史任务不再参与调度。更新前应停止服务并备份数据目录。
 
 结果记录与步骤推进在事务中保存，网络不占用数据库事务。附件先写临时文件、fsync、重命名，再通过登记回调保存元数据；失败回滚不会删除其他下载已登记的同内容文件。同一运行内登记过且仍可读的 URL 可复用，不等于跨运行资源去重。文件中断后重新下载，目前没有文件字节级续传、磁盘配额或自动历史清理。
 

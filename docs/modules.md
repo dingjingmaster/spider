@@ -126,6 +126,19 @@ Web 只读取当前代码目录的状态；没有新建、编辑、导入、试�
 
 如需在代码中使用已有 JSON 工作流，先调用 `workflow_register`（默认 `spiders_register` 已调用），再用 `crawler_add(registry, "stable-site-id", "workflow", workflow_json, ...)` 登记固定任务。旧工作流协议仅用于引擎和测试驱动，产品没有工作流编辑或调试 API。
 
+## 通用下载目录
+
+`storage` 提供跨运行的通用下载目录，音乐、小说等爬虫共用，不按站点建表：
+
+- `download_sources`：条目/合集级元数据，唯一键 `(spider_code, source, media_type, identifier)`。
+- `download_items`：每个可下载文件一行，保存 `download_url`、`status`、`attempts`、`target_path`、本地哈希等；`(source_id, logical_key)` 唯一，`download_url` 全局唯一。
+- `music_tracks` / `novel_files`：类型明细，和 `download_items.id` 一对一。
+- `music_downloads` / `novel_downloads`：按类型拼好的视图，查询时像单表一样使用。
+
+站点差异放在 `download_sources.metadata_json/extra_json`、`download_items.options_json/extra_json` 这类 JSON 字段里，不为每个站点新增列。下载参数（`headers`、`method`、`body` 等）放 `options_json`，不要把密钥写进去；需要认证时用 `auth_key` 指向代码内配置。多段资源用 `group_key`、`part_index`、`part_count` 表达；同一内容跨站点去重用 `content_key` / `remote_sha1`。
+
+接口：`store_download_scan`（一个事务写入 source 和 items）、`store_download_queue`（取待下载行）、`store_download_start` / `store_download_finish`（状态流转）、`store_download_decide`（人工改 decision 并置 curated）、`store_download_summary`。SQL 仍只存在于 storage 内部。
+
 ## 恢复、所有权和状态
 
 `CrawlerContext` 和配置快照在回调期间借用，禁止保存到全局变量或在返回后使用。每次运行拥有独立 Cookie 会话；`crawler_fetch` 和 `crawler_save_file` 在请求后通过存储模块保存 Cookie。响应和返回的 JSON 由调用者释放，Cookie export/import 不访问数据库。

@@ -41,6 +41,19 @@ int store_session_save(Store *, int64_t, json_object *, char *, size_t);
 void store_session_prune(Store *, int64_t);
 int store_emit(Store *, int64_t, const char *, const char *, json_object *, char *, size_t);
 int store_export(Store *, int64_t, bool, char **, size_t *, char *, size_t);
+/* Generic download catalog shared by all media types. */
+int store_download_scan(Store *, int64_t run_id, json_object *source, json_object *items,
+                        char *error, size_t cap);
+json_object *store_download_queue(Store *, const char *spider_code, const char *media_type,
+                                  int limit, char *error, size_t cap);
+int store_download_start(Store *, const char *download_url, int64_t run_id, char *error,
+                         size_t cap);
+int store_download_finish(Store *, const char *download_url, const char *status,
+                          const char *target_path, const char *local_sha256,
+                          int64_t local_bytes, const char *error_text, char *error, size_t cap);
+int store_download_decide(Store *, const char *download_url, const char *decision, int curated,
+                          char *error, size_t cap);
+json_object *store_download_summary(Store *, const char *spider_code, char *error, size_t cap);
 int wf_initialize_run(Store *, int64_t, char *, size_t);
 json_object *wf_claim_run(Store *, int64_t, char *, size_t);
 /* Returned JSON is owned by the caller. All input JSON is borrowed. An empty

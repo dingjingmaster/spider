@@ -129,7 +129,7 @@ static void version3_migration(void)
     assert(!strcmp(history, after));
     free(after);
     free(history);
-    assert(scalar(s.db, "PRAGMA user_version") == 3);
+    assert(scalar(s.db, "PRAGMA user_version") == 4);
     assert(scalar(s.db, "SELECT count(*) FROM spiders WHERE id IN(1,2) AND version=2 AND "
                         "json_extract(rule_json,'$.schema_version')=2") == 2);
     assert(scalar(s.db, "SELECT count(*) FROM spiders WHERE id=3 AND version=1") == 1);

@@ -328,7 +328,7 @@ def main():
                 db.execute("PRAGMA user_version=2")
             p = start(data_dir)
             with sqlite3.connect(pathlib.Path(data_dir, "spider.db")) as db:
-                assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+                assert db.execute("PRAGMA user_version").fetchone()[0] == 4
                 current = json.loads(db.execute("SELECT rule_json FROM spiders WHERE id=?", (migrated_sid,)).fetchone()[0])
                 assert current["schema_version"] == 2, current
             migrated_run = api(f"/api/spiders/{migrated_sid}/run", "POST", {}, 201)["id"]
