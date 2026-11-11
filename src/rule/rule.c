@@ -1,5 +1,4 @@
 #include "rule.h"
-#include "workflow.h"
 #include <lexbor/css/parser.h>
 #include <lexbor/css/selectors/selectors.h>
 #include <lexbor/css/selectors/selector.h>

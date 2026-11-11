@@ -1,5 +1,5 @@
-#include "storage.h"
-#include "rule/upgrade.h"
+#include "private/storage_internal.h"
+#include "rule/rule.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -457,31 +457,4 @@ int64_t store_add_artifact(Store *s, int64_t run, const char *url, const char *p
     sqlite3_finalize(q);
     pthread_mutex_unlock(&s->mutex);
     return id;
-}
-void store_schedule(Store *s)
-{
-    pthread_mutex_lock(&s->mutex);
-    sqlite3_stmt *q = prepare(s, "SELECT id,interval_seconds FROM spiders WHERE deleted=0 AND "
-                                 "enabled=1 AND interval_seconds>0 AND next_run<=?");
-    json_object *due = json_object_new_array();
-    if (q) {
-        sqlite3_bind_int64(q, 1, now_ms());
-        while (sqlite3_step(q) == SQLITE_ROW)
-            json_object_array_add(due, row_json(q));
-    }
-    sqlite3_finalize(q);
-    for (size_t i = 0; i < json_object_array_length(due); i++) {
-        json_object *row = json_object_array_get_idx(due, i);
-        int64_t id = json_object_get_int64(jg(row, "id"));
-        start_locked(s, id);
-        q = prepare(s, "UPDATE spiders SET next_run=? WHERE id=?");
-        if (q) {
-            sqlite3_bind_int64(q, 1, now_ms() + (int64_t)ji(row, "interval_seconds", 1) * 1000);
-            sqlite3_bind_int64(q, 2, id);
-            sqlite3_step(q);
-        }
-        sqlite3_finalize(q);
-    }
-    json_object_put(due);
-    pthread_mutex_unlock(&s->mutex);
 }

@@ -1,4 +1,4 @@
-#include "service/service.h"
+#include "spiders/spiders.h"
 #include "web/web.h"
 #include <curl/curl.h>
 #include <sys/file.h>
@@ -35,14 +35,16 @@ static int copy_arg(char *dest, size_t cap, const char *s)
 static void help(void)
 {
     puts("Spider 0.1.0 - C / SQLite crawler\nUsage: spider [--host 127.0.0.1] [--port 8080] "
-         "[--workers 1]\n              [--data-dir ./data] [--ui-dir PATH] [--token "
+         "[--workers 4]\n              [--data-dir ./data] [--ui-dir PATH] [--token "
          "TOKEN]\nNon-loopback binding requires --token. No browser runtime required.");
 }
 int main(int argc, char **argv)
 {
-    App app = {0};
+    struct {
+        char token[256], data_dir[SP_PATH], ui_dir[SP_PATH], listen[128];
+    } app = {0};
     char error[SP_ERROR] = {0}, data[SP_PATH] = "data", host[80] = "127.0.0.1", ui[SP_PATH] = "";
-    int port = 8080, workers = 1;
+    int port = 8080, workers = 4;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             help();
@@ -145,12 +147,25 @@ int main(int argc, char **argv)
         close(lock);
         return 1;
     }
-    if (store_open(&app.store, path, error, sizeof(error))) {
-        fprintf(stderr, "%s\n", error);
-        curl_global_cleanup();
-        close(lock);
-        return 1;
-    }
+    Store *store = store_create(path, error, sizeof(error));
+    DownloadClient *downloads = NULL;
+    CrawlerRegistry *registry = NULL;
+    Status *status = NULL;
+    Scheduler *scheduler = NULL;
+    Web *web = NULL;
+    int result = 1;
+    if (!store)
+        goto done;
+    if (snprintf(path, sizeof(path), "%s/downloads", app.data_dir) >= (int)sizeof(path))
+        goto done;
+    downloads = download_create(path, error, sizeof(error));
+    status = status_create(store);
+    registry = crawler_create();
+    if (!downloads || !status || !registry || spiders_register(registry, error, sizeof(error)))
+        goto done;
+    scheduler = scheduler_create(store, registry, downloads, status);
+    if (!scheduler || scheduler_start(scheduler, workers, error, sizeof(error)))
+        goto done;
     snprintf(app.listen, sizeof(app.listen), "%s:%d", host, port);
     struct sigaction sa = {0};
     sa.sa_handler = stop_signal;
@@ -158,30 +173,25 @@ int main(int argc, char **argv)
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
-    if (service_start(&app, workers, error, sizeof(error))) {
-        fprintf(stderr, "%s\n", error);
-        store_close(&app.store);
-        curl_global_cleanup();
-        close(lock);
-        return 1;
-    }
-    struct mg_context *web = web_start(&app, error, sizeof(error));
-    if (!web) {
-        fprintf(stderr, "%s\n", error);
-        service_stop(&app);
-        store_close(&app.store);
-        curl_global_cleanup();
-        close(lock);
-        return 1;
-    }
+    WebConfig config = {.listen = app.listen, .ui_directory = app.ui_dir, .token = app.token};
+    web = web_start(&config, store, scheduler, registry, status, error, sizeof(error));
+    if (!web)
+        goto done;
     fprintf(stderr, "Spider listening on http://%s | data: %s\n", app.listen, app.data_dir);
     while (!interrupted)
         sleep_ms(100);
-    atomic_store(&app.stopping, true);
+    result = 0;
+done:
+    if (result)
+        fprintf(stderr, "%s\n", *error ? error : "Cannot initialize crawler modules");
+    scheduler_stop(scheduler);
     web_stop(web);
-    service_stop(&app);
-    store_close(&app.store);
+    scheduler_destroy(scheduler);
+    crawler_destroy(registry);
+    status_destroy(status);
+    download_destroy(downloads);
+    store_destroy(store);
     curl_global_cleanup();
     close(lock);
-    return 0;
+    return result;
 }

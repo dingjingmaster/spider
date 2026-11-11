@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {spider: null, run: null, active: false, results: [], workflow: null, debugSession: null, debugSignature: null, debugEpoch: 0, debugSequence: 0, debugNext: [], debugBusy: false, releasingSessions: new Set(), bindingSource: null, selectedPointer: null, legacySequence: 0, trace: null, traceRequest: 0, traceSteps: [], token: sessionStorage.getItem('spider-token') || ''};
+const state = {implementations: [{id: 'workflow', name: 'JSON 工作流'}], spider: null, run: null, active: false, results: [], workflow: null, debugSession: null, debugSignature: null, debugEpoch: 0, debugSequence: 0, debugNext: [], debugBusy: false, releasingSessions: new Set(), bindingSource: null, selectedPointer: null, legacySequence: 0, trace: null, traceRequest: 0, traceSteps: [], token: sessionStorage.getItem('spider-token') || ''};
 const statuses = {queued: '排队中', running: '运行中', succeeded: '已完成', failed: '失败', partial: '部分完成', waiting: '等待子分支', done: '已完成', skipped: '已跳过', cancelled: '已停止'};
 const defaults = workflowDefaults();
 function node(tag, text, cls) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
@@ -192,12 +192,37 @@ function collectWorkflow(validate = true) {
   state.workflow = rule; syncWorkflowJSON(); refreshPreviewSteps(); return rule;
 }
 function captureWorkflow() { resetDebug('规则已修改，请重新调试。'); try { collectWorkflow(false); } catch (e) { notify(e.message, true); } }
+function nativeRule(rule) { return typeof rule?.implementation === 'string' && rule.implementation !== 'workflow'; }
+function validateCrawlerConfig(rule) {
+  if (!nativeRule(rule)) return validateWorkflow(rule);
+  if (!rule.name || typeof rule.name !== 'string') throw new Error('请填写爬虫名称');
+  if (rule.interval_seconds !== undefined && (!Number.isInteger(rule.interval_seconds) || rule.interval_seconds < 0 || rule.interval_seconds > 31536000)) throw new Error('执行间隔必须是 0 到 31536000 的整数');
+  if (rule.enabled !== undefined && typeof rule.enabled !== 'boolean') throw new Error('enabled 必须是布尔值');
+}
+function renderImplementations() {
+  const selected = state.workflow?.implementation || 'workflow';
+  const choices = [...state.implementations];
+  if (!choices.some(choice => choice.id === selected)) choices.push({id:selected,name:selected});
+  $('implementation').replaceChildren();
+  for (const choice of choices) { const option = node('option', choice.name); option.value = choice.id; $('implementation').append(option); }
+  $('implementation').value = selected;
+}
 function showRule(rule, id = null, version = null) {
-  validateWorkflow(rule); resetDebug('请选择步骤开始调试。', true); state.spider = id; state.workflow = clone(rule); renderWorkflow();
-  $('editor-title').textContent = rule.name || '新建工作流'; $('version').textContent = version ? `版本 ${version}` : '未保存'; $('delete').hidden = !id;
+  validateCrawlerConfig(rule); resetDebug('请选择步骤开始调试。', true); state.spider = id; state.workflow = clone(rule);
+  const native = nativeRule(rule);
+  $('workflow-editor').hidden = native; $('native-editor').hidden = !native; $('preview').hidden = native;
+  if (native) $('native-config').value = JSON.stringify(rule, null, 2); else renderWorkflow();
+  renderImplementations();
+  $('editor-title').textContent = rule.name || '新建爬虫'; $('version').textContent = version ? `版本 ${version}` : '未保存'; $('delete').hidden = !id;
   $('preview-card').hidden = true; listSpiders().catch(() => {});
 }
-function readRule() { return collectWorkflow(); }
+function readRule() {
+  if (!nativeRule(state.workflow)) return collectWorkflow();
+  const rule = jsonObject($('native-config').value, '爬虫配置');
+  validateCrawlerConfig(rule);
+  if (!nativeRule(rule)) throw new Error('请通过实现选择框切换回 JSON 工作流');
+  state.workflow = clone(rule); return rule;
+}
 async function listSpiders() {
   const rows = await api('/api/spiders'); $('spiders').replaceChildren();
   if (!rows.length) $('spiders').append(node('p', '点击 ＋ 创建第一个爬虫', 'empty'));
@@ -223,9 +248,11 @@ async function selectRun(id, append = false) {
   state.run = id; const after = append && state.results.length ? state.results.at(-1).id : 0;
   const [run, items, events, artifacts, steps] = await Promise.all([api(`/api/runs/${id}`), api(`/api/runs/${id}/items?after=${after}`), api(`/api/runs/${id}/events`), api(`/api/runs/${id}/artifacts`), api(`/api/runs/${id}/steps`)]);
   if (state.run !== id) return;
-  state.active = ['queued', 'running'].includes(run.status); state.results = append ? state.results.concat(items) : items;
+  state.active = ['queued', 'running'].includes(run.status) || run.execution_active === true; state.results = append ? state.results.concat(items) : items;
   $('run-detail').hidden = false; $('run-title').textContent = `运行 #${id} · ${statuses[run.status] || run.status} · ${run.item_count} 条结果`;
-  $('run-error').textContent = run.error || ''; $('stop').hidden = !state.active;
+  $('run-error').textContent = run.error || ''; $('stop').hidden = !['queued', 'running'].includes(run.status);
+  const progress = run.progress;
+  $('run-progress').textContent = run.status === 'cancelled' && run.execution_active ? '正在退出，清理完成后可再次启动。' : progress ? `${progress.phase || '执行中'} · 已传输 ${(progress.received / 1024).toFixed(1)} KiB${progress.total > 0 ? ` / ${(progress.total / 1024).toFixed(1)} KiB` : ''}` : '';
   renderTable($('result-items'), state.results.map(r => r.data)); $('more-results').hidden = items.length < 1000;
   $('events').textContent = events.slice().reverse().map(e => `${new Date(e.created_at).toLocaleTimeString()} [${e.level}] ${e.message}`).join('\n') || '等待执行…';
   renderSteps(steps);
@@ -298,12 +325,12 @@ function bindReference(stepId, target, key, pointer) {
 function setDebugBusy(busy) {
   state.debugBusy = busy; $('debug-execute').disabled = busy; $('debug-step').disabled = busy;
   $('debug-continue').disabled = busy || !state.debugNext.length; $('debug-next').disabled = busy || !state.debugNext.length;
-  const step = state.workflow?.steps.find(candidate => candidate.id === $('debug-step').value);
+  const step = state.workflow?.steps?.find(candidate => candidate.id === $('debug-step').value);
   $('debug-dry-run').disabled = busy || step?.type !== 'request'; $('debug-item-index').disabled = busy || step?.type !== 'foreach'; $('debug-branch').disabled = busy || step?.type !== 'parallel';
 }
 function debugAction(button, fn) { return action(button, fn).finally(() => setDebugBusy(state.debugBusy)); }
 function refreshDebugBranches() {
-  const step = state.workflow?.steps.find(candidate => candidate.id === $('debug-step').value); const selected = $('debug-branch').value; $('debug-branch').replaceChildren();
+  const step = state.workflow?.steps?.find(candidate => candidate.id === $('debug-step').value); const selected = $('debug-branch').value; $('debug-branch').replaceChildren();
   const empty = node('option', step?.type === 'parallel' ? '请选择一个分支' : '非 parallel 步骤'); empty.value = ''; $('debug-branch').append(empty);
   for (const branch of Object.keys(step?.type === 'parallel' ? step.branches || {} : {})) { const option = node('option', branch); option.value = branch; $('debug-branch').append(option); }
   $('debug-branch').value = [...$('debug-branch').options].some(option => option.value === selected) ? selected : ''; setDebugBusy(state.debugBusy);
@@ -386,10 +413,16 @@ $('more-results').onclick = () => action($('more-results'), () => selectRun(stat
 for (const format of ['json', 'csv']) $(`export-${format}`).onclick = () => action($(`export-${format}`), () => download(`/api/runs/${state.run}/export?format=${format}`, `spider-run-${state.run}.${format}`));
 $('export-rule').onclick = () => { try { saveBlob(new Blob([JSON.stringify(readRule(), null, 2)], {type: 'application/json'}), 'spider-rule.json'); } catch (e) { notify(e.message, true); } };
 $('import').onclick = () => $('import-file').click();
-$('import-file').onchange = async () => { try { const file = $('import-file').files[0]; if (!file) return; if (file.size > 1048576) throw new Error('规则文件不能超过 1 MiB'); const rule = JSON.parse(await file.text()); validateWorkflow(rule); showRule(rule); notify('已导入规则，保存后生效'); } catch (e) { notify(e.message, true); } finally { $('import-file').value = ''; } };
+$('import-file').onchange = async () => { try { const file = $('import-file').files[0]; if (!file) return; if (file.size > 1048576) throw new Error('规则文件不能超过 1 MiB'); const rule = JSON.parse(await file.text()); showRule(rule); notify('已导入规则，保存后生效'); } catch (e) { notify(e.message, true); } finally { $('import-file').value = ''; } };
+$('implementation').onchange = () => {
+  const kind = $('implementation').value;
+  const current = state.workflow;
+  const rule = kind === 'workflow' ? workflowDefaults() : {implementation:kind,name:current?.name || '新建爬虫',interval_seconds:0,enabled:true};
+  showRule(rule, state.spider);
+};
 $('token-toggle').onclick = () => { $('token-panel').hidden = !$('token-panel').hidden; };
 $('token-save').onclick = () => { state.token = $('token').value; sessionStorage.setItem('spider-token', state.token); connect(); };
-async function connect() { try { await api('/api/health'); $('connection').textContent = '服务已连接'; $('token-panel').hidden = true; await listSpiders(); await listRuns(); } catch (e) { $('connection').textContent = '连接失败'; notify(e.message, true); } }
+async function connect() { try { await api('/api/health'); const implementations = await api('/api/implementations'); if (Array.isArray(implementations) && implementations.length) state.implementations = implementations; renderImplementations(); $('connection').textContent = '服务已连接'; $('token-panel').hidden = true; await listSpiders(); await listRuns(); } catch (e) { $('connection').textContent = '连接失败'; notify(e.message, true); } }
 if (!$('preview-context').value.trim()) $('preview-context').value = '{"input":{},"steps":{}}';
 $('token').value = state.token; showRule(defaults); connect();
 let polling = false;

@@ -1,5 +1,5 @@
 #include "redact.h"
-#include "rule/workflow.h"
+#include "rule/rule.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>

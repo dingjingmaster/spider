@@ -1,5 +1,5 @@
 #include "rule/rule.h"
-#include "extract/extract.h"
+#include "parser/parser.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

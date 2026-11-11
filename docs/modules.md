@@ -1,0 +1,125 @@
+# 模块和爬虫接入规范
+
+所有源码位于 `src/`。每个模块只提供一对同名公共 `.h/.c`；复杂实现放在模块的 `private/`，其他产品模块不引用其私有头文件。所有模块由 `main/main.c` 初始化和按生命周期销毁。
+
+## 模块职责
+
+| 模块 | 公共接口 | 职责 |
+|---|---|---|
+| crawler | crawler.h / crawler.c | 爬虫定义注册、配置校验、每次运行上下文、协作取消、组合下载与结果登记 |
+| download | download.h / download.c | 网页/接口请求、Cookie 导入导出、流式文件下载、进度、临时文件与发布回滚 |
+| parser | parser.h / parser.c | HTML/CSS、JSON Pointer、字段类型转换；不联网、不操作数据库 |
+| storage | storage.h / storage.c | 配置、版本快照、运行、文件、会话、结果和工作流检查点；内部持有 SQLite 与锁 |
+| scheduler | scheduler.h / scheduler.c | 定时控制线程、固定工作线程池、完整运行领取、启动/取消、同一爬虫防重 |
+| status | status.h / status.c | 持久生命周期与计数的查询，内存中的当前阶段/传输进度投影 |
+| web | web.h / web.c | HTTP API、网页和操作入口；通过模块接口读写，不拼 SQL |
+| rule | rule.h / rule.c | JSON 工作流校验、模板、转换及旧定义升级；私有辅助实现不向外暴露 |
+| spiders | spiders.h / spiders.c | 内置爬虫统一注册入口；各网站实现放在子目录 |
+
+`common` 和 `model` 提供小型通用工具和数据类型。`browser` 是未启用的能力接口，不具备 JavaScript 执行能力。
+
+`download` 不依赖 `storage`、`scheduler` 或 `web`。文件发布后的数据库登记通过 `DownloadRecord` 回调完成，发布和失败回滚由下载模块的锁保护。`parser` 只处理输入内容。只有 `storage` 的实现能够访问 SQLite 和执行 SQL，`Store` 在公共头文件中是不透明句柄。网页的启动与停止请求统一调用调度接口。
+
+## 并发和运行身份
+
+调度单位是一次完整的爬虫运行。默认 4 个工作线程，`--workers 1..16` 可调整；不同爬虫配置 ID 的运行可并发，同一配置 ID 的执行入口和所有请求始终在同一个工作线程内串行完成。爬虫实现不得自行创建线程或并发传输。
+
+`implementation` 是编译注册的实现类型，例如 `workflow`；数据库 `spider_id` 是用户保存的一个配置实例；`run_id` 是该实例的一次运行。一个实现类型可对应多个独立配置实例。同一域名的不同配置仍然可能并发访问；本版本没有跨爬虫域名限速。
+
+一个爬虫最多有一个排队或运行中的任务。到期时已有任务则合并本次触发，更新下次触发时间，不积压重复任务。取消会立即持久化状态并通知执行逻辑退出，调度器保留该爬虫的占用资格直到执行回调和资源清理全部结束；期间再次手动启动返回 409。网络、解析、重试等待占用该爬虫的工作线程；网络和文件 IO 不持有调度器或数据库锁。
+
+服务退出时先通知并等待调度工作线程，再停止 Web 并等待请求处理结束，然后销毁注册表、状态、下载和存储模块。预览请求也可观察停止标志。运行内不要修改 `context->config`，它是提交运行时固定的规则快照。
+
+## 原生 C 爬虫
+
+新增 `src/spiders/my_site/my_site.h` 和 `my_site.c`，对外只提供注册函数。下面是“请求页面、解析、保存记录”的最小实现，文件下载可以按业务需要加入同一循环。
+
+```c
+/* my_site.h */
+#ifndef MY_SITE_H
+#define MY_SITE_H
+#include "crawler/crawler.h"
+int my_site_register(CrawlerRegistry *, char *error, size_t cap);
+#endif
+```
+
+```c
+/* my_site.c */
+#include "my_site.h"
+#include "parser/parser.h"
+#include "rule/rule.h"
+#include <stdlib.h>
+
+static int run(CrawlerContext *context, char *error, size_t cap)
+{
+    HttpResponse response = {0};
+    json_object *items = NULL;
+    char *next = NULL;
+    int rc = crawler_fetch(context, context->config,
+                           js(context->config, "url", ""), &response, error, cap);
+    if (rc) goto done;
+    rc = extract_document(context->config, response.body, response.url,
+                          &items, &next, error, cap);
+    if (rc) goto done;
+    for (size_t i = 0; i < json_object_array_length(items); i++) {
+        if (crawler_cancelled(context)) { rc = -1; break; }
+        json_object *item = json_object_array_get_idx(items, i);
+        const char *key = js(item, "url", "");
+        rc = store_emit(context->store, context->run_id, key,
+                        response.url, item, error, cap);
+        if (rc) break;
+    }
+done:
+    free(next);
+    json_object_put(items);
+    download_response_free(&response);
+    return rc;
+}
+
+int my_site_register(CrawlerRegistry *registry, char *error, size_t cap)
+{
+    CrawlerDefinition definition = {
+        .id = "my-site", .name = "My site",
+        .validate = request_validate, .run = run
+    };
+    return crawler_register(registry, &definition, error, cap);
+}
+```
+
+在 `spiders/spiders.c` 包含该公共头文件并调用注册函数，将 `.c` 加入 `src/CMakeLists.txt` 的 `spider_core` 源文件列表后重新编译。注册必须在 `scheduler_start` 前完成；注册表在启动后冻结。类型 ID 不可重复，注册表复制 ID/name 并在销毁时调用可选的 `destroy(userdata)`。注册失败时 userdata 仍由调用者负责释放。
+
+对应配置示例：
+
+```json
+{
+  "implementation": "my-site",
+  "name": "网站资源",
+  "url": "https://example.com/resources",
+  "format": "html",
+  "row_selector": "a.download",
+  "fields": [
+    {"name": "title", "selector": ""},
+    {"name": "url", "selector": "", "attribute": "href", "download": true, "required": true}
+  ],
+  "interval_seconds": 3600,
+  "enabled": true
+}
+```
+
+`download: true` 只把链接转换为绝对地址，不会自动下载。需要实际下载时，在循环里调用 `crawler_save_file(context, options, url, &file, error, cap)`。它组合下载模块和持久化登记，返回 `DownloadFile`，同一次运行的已登记且仍可读 URL 可复用。单独使用下载模块时，`download_save` 的 `record` 回调接收文件信息，不接收数据库句柄。
+
+通过 `/api/implementations` 获取已注册类型；网页根据实际注册结果提供实现选择，原生实现使用独立 JSON 配置编辑器。未知类型被 API 拒绝。内置的真实实现目前为 `spiders/workflow/`；上述站点是接入示例，需要开发者实际加入编译，示例域名和选择器需要替换。
+
+## 恢复、所有权和状态
+
+`CrawlerContext` 和配置快照在回调期间借用，禁止保存到全局变量或在返回后使用。每次运行拥有独立 Cookie 会话；`crawler_fetch` 和 `crawler_save_file` 在请求后通过存储模块保存 Cookie。响应和返回的 JSON 由调用者释放，Cookie export/import 不访问数据库。
+
+工作流实现逐运行初始化/领取持久化步骤，保存过的步骤不重跑；`foreach`、`parallel` 保留独立上下文和汇合结果，分支在同一线程顺序推进。POST 中断后的不确定结果继续遵循显式重试授权规则。
+
+原生 C 爬虫的函数调用栈不能持久化；服务重启后从运行入口重新进入。需要使用已保存结果、文件记录或业务检查点避免重复副作用。`store_emit` 的 stable key 按一次运行幂等，并与结果计数在同一事务提交；不表示跨运行增量去重。对外部网站的 POST 也不会自动获得幂等保证。
+
+生命周期状态以数据库为准。`status_progress` 更新当前阶段和传输字节数，Web 查询到的 `execution_active` 表示本进程仍在执行/清理该运行。没有总长度时不显示虚假的百分比。执行结束后清理内存进度，历史状态、步骤、结果和文件记录仍保留在 SQLite 中。
+
+## 本次重构验证
+
+Release 和 ASan/UBSan（含泄漏检查）各通过完整 15 项测试；包括真实本地 HTTP 并发、原生 C 回调取消退出防重、工作流/会话恢复、文件发布回滚、原生 CSV 导出和传输认证头边界。验证使用临时数据库和本地 HTTP fixture，不访问实际业务网站或用户数据目录。

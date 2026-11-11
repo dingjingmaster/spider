@@ -1,15 +1,19 @@
 #include "web.h"
-#include "engine/workflow.h"
-#include "engine/preview.h"
 #include "common/redact.h"
-#include "rule/rule.h"
 #include <civetweb.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
-
+struct Web {
+    Store *store;
+    Scheduler *scheduler;
+    CrawlerRegistry *registry;
+    Status *status;
+    struct mg_context *server;
+    char listen[128], ui_dir[SP_PATH], token[256];
+};
 static int send_bytes(struct mg_connection *c, int status, const char *type, const char *body,
                       size_t len)
 {
@@ -82,175 +86,24 @@ static json_object *read_json(struct mg_connection *c, char *e, size_t cap)
     free(body);
     return j;
 }
-static json_object *one_row(App *a, const char *sql, int64_t id)
+static int reply_rows(struct mg_connection *c, json_object *rows, const char *error)
 {
-    json_object *rows = store_query(&a->store, sql, id, NULL, 0), *out = NULL;
-    if (rows && json_object_array_length(rows))
-        out = json_object_get(json_object_array_get_idx(rows, 0));
-    if (rows)
-        json_object_put(rows);
-    return out;
-}
-static int query_reply(struct mg_connection *c, App *a, const char *sql, int64_t id)
-{
-    char e[SP_ERROR] = {0};
-    json_object *rows = store_query(&a->store, sql, id, e, sizeof(e));
-    return rows ? send_json(c, 200, rows) : error_json(c, 500, e);
-}
-static void csv_cell(FILE *f, const char *s)
-{
-    fputc('"', f);
-    if (*s == '=' || *s == '+' || *s == '-' || *s == '@' || *s == '\t' || *s == '\r')
-        fputc('\'', f);
-    for (; *s; s++) {
-        if (*s == '"')
-            fputc('"', f);
-        fputc(*s, f);
-    }
-    fputc('"', f);
-}
-static bool csv_fields_valid(json_object *fields)
-{
-    if (!fields || !json_object_is_type(fields, json_type_array) ||
-        !json_object_array_length(fields))
-        return false;
-    for (size_t i = 0; i < json_object_array_length(fields); i++) {
-        json_object *field = json_object_array_get_idx(fields, i);
-        if (!field || !json_object_is_type(field, json_type_object))
-            return false;
-        json_object *name = jg(field, "name");
-        if (!name || !json_object_is_type(name, json_type_string) || !*json_object_get_string(name))
-            return false;
-    }
-    return true;
-}
-static int export_run(struct mg_connection *c, App *app, int64_t id, bool csv)
-{
-    json_object *run = one_row(app, "SELECT snapshot FROM runs WHERE id=?", id);
-    if (!run)
-        return error_json(c, 404, "Run not found");
-    char *body = NULL;
-    size_t size = 0;
-    FILE *f = open_memstream(&body, &size);
-    if (!f) {
-        json_object_put(run);
-        return error_json(c, 500, "Cannot create export");
-    }
-    pthread_mutex_lock(&app->store.mutex);
-    json_object *snapshot = jg(run, "snapshot");
-    json_object *fields = jg(snapshot, "fields"), *derived_fields = NULL;
-    bool explicit_fields = json_object_object_get_ex(snapshot, "fields", &fields);
-    if (csv && ji(snapshot, "schema_version", 1) == 2 && explicit_fields &&
-        !csv_fields_valid(fields)) {
-        pthread_mutex_unlock(&app->store.mutex);
-        fclose(f);
-        free(body);
-        json_object_put(run);
-        return error_json(c, 422,
-                          "Workflow fields must be a nonempty array of objects with name strings");
-    }
-    /* Explicit export fields select/order columns; otherwise infer emitted record keys. */
-    if (csv && ji(snapshot, "schema_version", 1) == 2 && !explicit_fields) {
-        derived_fields = json_object_new_array();
-        sqlite3_stmt *columns = NULL;
-        int cr =
-            sqlite3_prepare_v2(app->store.db,
-                               "SELECT DISTINCT json_each.key FROM items,json_each(items.data) "
-                               "WHERE items.run_id=? ORDER BY json_each.key",
-                               -1, &columns, NULL);
-        if (cr == SQLITE_OK) {
-            sqlite3_bind_int64(columns, 1, id);
-            while ((cr = sqlite3_step(columns)) == SQLITE_ROW) {
-                json_object *field = json_object_new_object();
-                json_object_object_add(
-                    field, "name",
-                    json_object_new_string((const char *)sqlite3_column_text(columns, 0)));
-                json_object_array_add(derived_fields, field);
-            }
-        }
-        sqlite3_finalize(columns);
-        if (cr != SQLITE_DONE) {
-            pthread_mutex_unlock(&app->store.mutex);
-            fclose(f);
-            free(body);
-            json_object_put(derived_fields);
-            json_object_put(run);
-            return error_json(c, 500, "Cannot derive export columns");
-        }
-        fields = derived_fields;
-    }
-    if (csv) {
-        for (size_t i = 0; i < json_object_array_length(fields); i++) {
-            if (i)
-                fputc(',', f);
-            csv_cell(f, js(json_object_array_get_idx(fields, i), "name", ""));
-        }
-        fputs("\r\n", f);
-    } else
-        fputc('[', f);
-    sqlite3_stmt *q = NULL;
-    int rc = sqlite3_prepare_v2(app->store.db, "SELECT data FROM items WHERE run_id=? ORDER BY id",
-                                -1, &q, NULL);
-    size_t count = 0;
-    bool too_large = false;
-    if (rc == SQLITE_OK) {
-        sqlite3_bind_int64(q, 1, id);
-        while ((rc = sqlite3_step(q)) == SQLITE_ROW) {
-            const char *text = (const char *)sqlite3_column_text(q, 0);
-            if (csv) {
-                json_object *item = json_tokener_parse(text);
-                for (size_t i = 0; i < json_object_array_length(fields); i++) {
-                    if (i)
-                        fputc(',', f);
-                    json_object *v = jg(item, js(json_object_array_get_idx(fields, i), "name", ""));
-                    csv_cell(f, v ? json_object_get_string(v) : "");
-                }
-                fputs("\r\n", f);
-                json_object_put(item);
-            } else {
-                if (count)
-                    fputc(',', f);
-                fputs(text, f);
-            }
-            count++;
-            if (ftell(f) > 33554432) {
-                too_large = true;
-                break;
-            }
-        }
-    }
-    sqlite3_finalize(q);
-    pthread_mutex_unlock(&app->store.mutex);
-    if (!csv)
-        fputc(']', f);
-    int io = fclose(f);
-    if (derived_fields)
-        json_object_put(derived_fields);
-    json_object_put(run);
-    if (io || too_large || rc != SQLITE_DONE) {
-        free(body);
-        return error_json(c, too_large ? 413 : 500,
-                          too_large ? "Export exceeds 32 MiB; use paginated results API"
-                                    : "Export failed");
-    }
-    int status = send_bytes(
-        c, 200, csv ? "text/csv; charset=utf-8" : "application/json; charset=utf-8", body, size);
-    free(body);
-    return status;
+    return rows ? send_json(c, 200, rows)
+                : error_json(c, 500, error && *error ? error : "Cannot query data");
 }
 static int64_t query_number(const char *query, const char *key, int64_t fallback)
 {
-    char b[64];
-    if (!query || mg_get_var(query, strlen(query), key, b, sizeof(b)) < 0)
+    char value[40] = {0};
+    if (!query || mg_get_var(query, strlen(query), key, value, sizeof(value)) < 0)
         return fallback;
-    errno = 0;
     char *end;
-    long long v = strtoll(b, &end, 10);
-    return errno || *end || v < 0 ? fallback : v;
+    errno = 0;
+    long long result = strtoll(value, &end, 10);
+    return errno || *end || result < 0 ? fallback : (int64_t)result;
 }
 static int handler(struct mg_connection *c, void *context)
 {
-    App *app = context;
+    Web *app = context;
     const struct mg_request_info *r = mg_get_request_info(c);
     const char *path = r->local_uri, *method = r->request_method;
     char e[SP_ERROR] = {0};
@@ -273,12 +126,15 @@ static int handler(struct mg_connection *c, void *context)
             json_object_object_add(j, "browser_available", json_object_new_boolean(false));
             return send_json(c, 200, j);
         }
+        if (get && !strcmp(path, "/api/implementations"))
+            return send_json(c, 200, crawler_definitions(app->registry));
         if (post && !strcmp(path, "/api/preview/release")) {
             json_object *payload = read_json(c, e, sizeof(e));
             if (!payload)
                 return error_json(c, 400, e);
             int rc =
-                preview_pool_release(app->previews, js(payload, "session_id", ""), e, sizeof(e));
+                crawler_release_preview(app->registry, js(payload, "implementation", "workflow"),
+                                        js(payload, "session_id", ""), e, sizeof(e));
             json_object_put(payload);
             if (rc)
                 return error_json(c, 404, e);
@@ -286,86 +142,72 @@ static int handler(struct mg_connection *c, void *context)
             json_object_object_add(reply, "released", json_object_new_boolean(true));
             return send_json(c, 200, reply);
         }
-        if ((!strcmp(path, "/api/preview") || !strcmp(path, "/api/preview/step")) && post) {
-            json_object *rule = read_json(c, e, sizeof(e));
-            if (!rule)
+        if (post && (!strcmp(path, "/api/preview") || !strcmp(path, "/api/preview/step"))) {
+            json_object *payload = read_json(c, e, sizeof(e));
+            if (!payload)
                 return error_json(c, 400, e);
-            json_object *definition = jg(rule, "rule");
-            if (rule_validate(definition ? definition : rule, e, sizeof(e))) {
-                json_object_put(rule);
+            json_object *definition = jg(payload, "rule");
+            if (crawler_validate(app->registry, definition ? definition : payload, e, sizeof(e))) {
+                json_object_put(payload);
                 return error_json(c, 400, e);
             }
-            json_object *out = !strcmp(path, "/api/preview/step")
-                                   ? workflow_preview_step(app, rule, e, sizeof(e))
-                                   : workflow_preview(app, rule, e, sizeof(e));
-            if (out && !strcmp(path, "/api/preview")) {
-                json_object *safe = debug_redact(out, definition ? definition : rule);
-                json_object_put(out);
-                out = safe;
-            }
-            json_object_put(rule);
+            json_object *out =
+                crawler_preview(app->registry, payload, !strcmp(path, "/api/preview/step"),
+                                scheduler_stopping(app->scheduler), e, sizeof(e));
+            json_object_put(payload);
             return out ? send_json(c, 200, out) : error_json(c, 422, e);
         }
         if (!strcmp(path, "/api/spiders")) {
-            if (get)
-                return query_reply(
-                    c, app,
-                    "SELECT id,name,version,enabled,interval_seconds,next_run,updated_at FROM "
-                    "spiders WHERE deleted=0 ORDER BY id DESC",
-                    0);
+            if (get) {
+                json_object *rows = store_spiders(app->store, e, sizeof(e));
+                return reply_rows(c, rows, e);
+            }
             if (post) {
-                json_object *rule = read_json(c, e, sizeof(e));
-                if (!rule)
+                json_object *config = read_json(c, e, sizeof(e));
+                if (!config)
                     return error_json(c, 400, e);
-                if (rule_validate(rule, e, sizeof(e))) {
-                    json_object_put(rule);
+                if (crawler_validate(app->registry, config, e, sizeof(e))) {
+                    json_object_put(config);
                     return error_json(c, 400, e);
                 }
-                int64_t id = store_save_spider(&app->store, 0, rule, e, sizeof(e));
-                json_object_put(rule);
+                int64_t id = store_save_spider(app->store, 0, config, e, sizeof(e));
+                json_object_put(config);
                 return id > 0 ? send_json(c, 201, id_json(id)) : error_json(c, 500, e);
             }
         }
-        if (!strcmp(path, "/api/runs") && get) {
-            int64_t sid = query_number(r->query_string, "spider_id", 0);
-            return query_reply(
-                c, app,
-                "SELECT "
-                "id,spider_id,version,status,pages,item_count,error,created_at,started_at,finished_"
-                "at FROM runs WHERE (?1=0 OR spider_id=?1) ORDER BY id DESC LIMIT 200",
-                sid);
+        if (get && !strcmp(path, "/api/runs")) {
+            json_object *rows = status_runs(
+                app->status, query_number(r->query_string, "spider_id", 0), e, sizeof(e));
+            return reply_rows(c, rows, e);
         }
         int64_t id = 0;
         char action[80] = {0};
         int used = 0;
         if (sscanf(path, "/api/spiders/%" SCNd64 "%n", &id, &used) == 1 && id > 0) {
             const char *tail = path + used;
-            if (!strcmp(tail, "/run") && post) {
-                int64_t run = store_start_run(&app->store, id, e, sizeof(e));
+            if (post && !strcmp(tail, "/run")) {
+                int64_t run = scheduler_submit(app->scheduler, id, e, sizeof(e));
                 return run > 0 ? send_json(c, 201, id_json(run)) : error_json(c, 409, e);
             }
             if (!*tail) {
                 if (get) {
-                    json_object *j = one_row(app,
-                                             "SELECT id,name,version,rule_json AS rule FROM "
-                                             "spiders WHERE id=? AND deleted=0",
-                                             id);
-                    return j ? send_json(c, 200, j) : error_json(c, 404, "Spider not found");
+                    json_object *row = store_spider(app->store, id);
+                    return row ? send_json(c, 200, row) : error_json(c, 404, "Spider not found");
                 }
                 if (put) {
-                    json_object *rule = read_json(c, e, sizeof(e));
-                    if (!rule)
+                    json_object *config = read_json(c, e, sizeof(e));
+                    if (!config)
                         return error_json(c, 400, e);
-                    if (rule_validate(rule, e, sizeof(e))) {
-                        json_object_put(rule);
+                    if (crawler_validate(app->registry, config, e, sizeof(e))) {
+                        json_object_put(config);
                         return error_json(c, 400, e);
                     }
-                    int64_t saved = store_save_spider(&app->store, id, rule, e, sizeof(e));
-                    json_object_put(rule);
+                    int64_t saved = store_save_spider(app->store, id, config, e, sizeof(e));
+                    json_object_put(config);
                     return saved > 0 ? send_json(c, 200, id_json(saved)) : error_json(c, 404, e);
                 }
                 if (del)
-                    return store_delete_spider(&app->store, id, e, sizeof(e))
+                    return store_delete_spider(app->store, id, e, sizeof(e))
                                ? error_json(c, 409, e)
                                : send_json(c, 200, id_json(id));
             }
@@ -374,75 +216,74 @@ static int handler(struct mg_connection *c, void *context)
         if (sscanf(path, "/api/runs/%" SCNd64 "%n", &id, &used) == 1 && id > 0) {
             const char *tail = path + used;
             if (!*tail && get) {
-                json_object *j = one_row(app, "SELECT * FROM runs WHERE id=?", id);
-                return j ? send_json(c, 200, j) : error_json(c, 404, "Run not found");
+                json_object *row = status_run(app->status, id);
+                return row ? send_json(c, 200, row) : error_json(c, 404, "Run not found");
             }
-            if (!strcmp(tail, "/stop") && post)
-                return store_cancel_run(&app->store, id) ? error_json(c, 409, "Run not active")
-                                                         : send_json(c, 200, id_json(id));
-            if (!strcmp(tail, "/items") && get) {
-                int64_t after = query_number(r->query_string, "after", 0);
-                char sql[256];
-                snprintf(sql, sizeof(sql),
-                         "SELECT id,source_url,data,created_at FROM items WHERE run_id=? AND "
-                         "id>%lld ORDER BY id LIMIT 1000",
-                         (long long)after);
-                return query_reply(c, app, sql, id);
+            if (post && !strcmp(tail, "/stop"))
+                return scheduler_cancel(app->scheduler, id, e, sizeof(e))
+                           ? error_json(c, 409, e)
+                           : send_json(c, 200, id_json(id));
+            if (get && !strcmp(tail, "/items")) {
+                json_object *rows = store_items(
+                    app->store, id, query_number(r->query_string, "after", 0), e, sizeof(e));
+                return reply_rows(c, rows, e);
             }
-            if (!strcmp(tail, "/steps") && get)
-                return query_reply(c, app,
-                                   "SELECT id,run_id,step_id,parent_id,branch_key,record_key,"
-                                   "status,attempts,error,phase FROM step_instances "
-                                   "WHERE run_id=? ORDER BY id DESC LIMIT 1000",
-                                   id);
-            if (!strncmp(tail, "/steps/", 7) && get) {
+            if (get && !strcmp(tail, "/steps")) {
+                json_object *rows = status_steps(app->status, id, e, sizeof(e));
+                return reply_rows(c, rows, e);
+            }
+            if (get && !strncmp(tail, "/steps/", 7)) {
                 const char *start = tail + 7;
                 char *end;
                 errno = 0;
                 int64_t instance = strtoll(start, &end, 10);
                 if (*start >= '0' && *start <= '9' && !errno && !*end && instance > 0) {
-                    char sql[320];
-                    snprintf(sql, sizeof(sql),
-                             "SELECT id,run_id,step_id,parent_id,branch_key,record_key,"
-                             "status,attempts,context,output,error,phase FROM step_instances "
-                             "WHERE run_id=? AND id=%" PRId64,
-                             instance);
-                    json_object *j = one_row(app, sql, id);
-                    if (!j)
+                    json_object *row = status_step(app->status, id, instance);
+                    if (!row)
                         return error_json(c, 404, "Step instance not found in this run");
-                    json_object *run = one_row(app, "SELECT snapshot FROM runs WHERE id=?", id);
-                    json_object *safe = debug_redact(j, jg(run, "snapshot"));
+                    json_object *run = store_run(app->store, id);
+                    json_object *safe = debug_redact(row, jg(run, "snapshot"));
                     json_object_put(run);
-                    json_object_put(j);
+                    json_object_put(row);
                     return send_json(c, 200, safe);
                 }
                 return error_json(c, 404, "Step instance not found in this run");
             }
-            if (!strcmp(tail, "/events") && get)
-                return query_reply(c, app,
-                                   "SELECT id,level,message,created_at FROM run_events WHERE "
-                                   "run_id=? ORDER BY id DESC LIMIT 200",
-                                   id);
-            if (!strcmp(tail, "/artifacts") && get)
-                return query_reply(
-                    c, app, "SELECT id,url,sha256,bytes FROM artifacts WHERE run_id=? ORDER BY id",
-                    id);
-            if (!strcmp(tail, "/export") && get) {
+            if (get && !strcmp(tail, "/events")) {
+                json_object *rows = status_events(app->status, id, e, sizeof(e));
+                return reply_rows(c, rows, e);
+            }
+            if (get && !strcmp(tail, "/artifacts")) {
+                json_object *rows = store_artifacts(app->store, id, e, sizeof(e));
+                for (size_t i = 0; rows && i < json_object_array_length(rows); i++)
+                    json_object_object_del(json_object_array_get_idx(rows, i), "path");
+                return reply_rows(c, rows, e);
+            }
+            if (get && !strcmp(tail, "/export")) {
                 char format[16] = {0};
                 if (r->query_string)
                     mg_get_var(r->query_string, strlen(r->query_string), "format", format,
                                sizeof(format));
-                return export_run(c, app, id, !strcmp(format, "csv"));
+                bool csv = !strcmp(format, "csv");
+                char *body = NULL;
+                size_t size = 0;
+                int rc = store_export(app->store, id, csv, &body, &size, e, sizeof(e));
+                if (rc)
+                    return error_json(c, rc, e);
+                rc = send_bytes(c, 200,
+                                csv ? "text/csv; charset=utf-8" : "application/json; charset=utf-8",
+                                body, size);
+                free(body);
+                return rc;
             }
         }
         if (get && sscanf(path, "/api/artifacts/%" SCNd64 "/%79s", &id, action) == 2 && id > 0 &&
             !strcmp(action, "file")) {
-            json_object *j = one_row(app, "SELECT path FROM artifacts WHERE id=?", id);
-            if (!j)
+            json_object *row = store_artifact(app->store, id);
+            if (!row)
                 return error_json(c, 404, "File not found");
-            const char *file = js(j, "path", "");
-            mg_send_file(c, file);
-            json_object_put(j);
+            mg_send_file(c, js(row, "path", ""));
+            json_object_put(row);
             return 200;
         }
         return error_json(c, 404, "API route not found");
@@ -493,26 +334,55 @@ static int log_message(const struct mg_connection *c, const char *message)
     fprintf(stderr, "web: %s\n", message);
     return 1;
 }
-struct mg_context *web_start(App *app, char *e, size_t n)
+Web *web_start(const WebConfig *config, Store *store, Scheduler *scheduler,
+               CrawlerRegistry *registry, Status *status, char *e, size_t n)
 {
+    if (!config || !config->listen || !config->ui_directory || !store || !scheduler || !registry ||
+        !status) {
+        fail(e, n, "Invalid Web dependencies");
+        return NULL;
+    }
+    Web *web = calloc(1, sizeof(*web));
+    if (!web) {
+        fail(e, n, "Cannot allocate Web server");
+        return NULL;
+    }
+    web->store = store;
+    web->scheduler = scheduler;
+    web->registry = registry;
+    web->status = status;
+    if (strlen(config->listen) >= sizeof(web->listen) ||
+        strlen(config->ui_directory) >= sizeof(web->ui_dir) ||
+        (config->token && strlen(config->token) >= sizeof(web->token))) {
+        free(web);
+        fail(e, n, "Web configuration too long");
+        return NULL;
+    }
+    strcpy(web->listen, config->listen);
+    strcpy(web->ui_dir, config->ui_directory);
+    if (config->token)
+        strcpy(web->token, config->token);
     struct mg_callbacks callbacks = {0};
     callbacks.log_message = log_message;
     const char *options[] = {
-        "listening_ports", app->listen,         "num_threads", "6", "request_timeout_ms",
+        "listening_ports", web->listen,         "num_threads", "6", "request_timeout_ms",
         "15000",           "enable_keep_alive", "no",          NULL};
     mg_init_library(0);
-    struct mg_context *ctx = mg_start(&callbacks, app, options);
-    if (!ctx) {
-        fail(e, n, "Cannot start HTTP listener on %s", app->listen);
+    web->server = mg_start(&callbacks, web, options);
+    if (!web->server) {
+        fail(e, n, "Cannot start HTTP listener on %s", web->listen);
         mg_exit_library();
+        free(web);
         return NULL;
     }
-    mg_set_request_handler(ctx, "/", handler, app);
-    return ctx;
+    mg_set_request_handler(web->server, "/", handler, web);
+    return web;
 }
-void web_stop(struct mg_context *ctx)
+void web_stop(Web *web)
 {
-    if (ctx)
-        mg_stop(ctx);
-    mg_exit_library();
+    if (web) {
+        mg_stop(web->server);
+        mg_exit_library();
+        free(web);
+    }
 }

@@ -1,5 +1,4 @@
-#include "rule/data.h"
-#include "rule/workflow.h"
+#include "rule/rule.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>

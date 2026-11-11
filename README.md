@@ -24,11 +24,11 @@ cmake --build build -j
 
 远程绑定必须提供 token，在网页“连接设置”中填写同一口令。非本机访问应通过 HTTPS 反向代理；程序内置监听器提供 HTTP。token 通过 Authorization 请求头传递，不放 URL。浏览器将口令保存在当前会话的 sessionStorage 中。程序继承 libcurl 的代理环境设置；本地测试使用 `NO_PROXY=127.0.0.1,localhost`。
 
-默认一个工作线程，可通过 `--workers 1..16` 显式增加并发。所有运行及其步骤共享线程池；一个线程一次执行一个步骤，foreach/parallel 等待子分支时不占用线程。增加线程后，同一工作流的独立分支和不同运行可并发执行。`delay_ms` 是请求步骤的等待策略，不是跨爬虫的全局域名限速。一个数据目录只允许一个进程使用。Ctrl+C/SIGTERM 后按步骤恢复；网页“停止运行”会取消该运行。POST 中断后的恢复限制见 [工作流说明](docs/workflows.md#失败与恢复)。
+默认 4 个工作线程，可通过 `--workers 1..16` 调整。调度器按完整爬虫运行分配线程：不同爬虫配置可以并发，同一爬虫内部始终在同一个工作线程顺序执行，foreach/parallel 分支也串行推进并汇合。定时触发遇到已有任务会合并；取消后等待实际执行退出才允许再次启动。`delay_ms` 是请求步骤的等待策略，不是跨爬虫的全局域名限速。一个数据目录只允许一个进程使用。Ctrl+C/SIGTERM 后工作流按已提交步骤恢复；原生 C 爬虫从运行入口重新进入。POST 中断后的恢复限制见 [工作流说明](docs/workflows.md#失败与恢复)。
 
 ## 规则示例
 
-网页、规则导入和写入/试采集 API 统一使用 `schema_version: 2`。普通页面采集也使用同一工作流：request 提取列表，foreach 展开，emit 保存每条结果。
+内置 JSON 工作流使用 `schema_version: 2`，未指定 `implementation` 时默认为 `workflow`。原生 C 爬虫通过 `implementation` 选择编译注册的类型，网页提供独立 JSON 配置编辑器。普通页面采集也使用同一工作流：request 提取列表，foreach 展开，emit 保存每条结果。
 
 ```json
 {
@@ -69,20 +69,23 @@ src/
   main/          参数、启动、信号、单实例锁
   common/        JSON 辅助、时间、路径、URL、哈希
   model/         公共类型、状态
-  service/       工作线程生命周期
-  rule/          工作流校验、模板、旧定义升级、CSS 选择器校验
-  scheduler/     定时调度入口
-  engine/        步骤执行、试采集、分支汇合、重试、取消
-  http/          有界 HTTP 请求和流式下载
-  extract/       HTML/CSS、JSON Pointer、类型转换
-  artifact/      临时文件、内容哈希、去重、登记
-  storage/       SQLite、版本快照、队列、恢复、事务
-  web/           API、访问控制、导出
+  crawler/       爬虫接口、注册、独立运行上下文、取消和资源组合
+  download/      HTTP 请求、Cookie、流式下载、进度和文件发布
+  parser/        HTML/CSS、JSON Pointer、类型转换
+  storage/       不透明 SQLite 句柄、版本快照、检查点、结果与事务
+  scheduler/     定时控制线程、工作线程池、按爬虫串行调度
+  status/        持久状态查询、执行阶段、传输进度
+  rule/          工作流规则、模板和旧定义升级
+  spiders/       编译注册的爬虫实现
+    workflow/    JSON 工作流实现；步骤引擎和预览位于 private/
+  web/           API 与访问控制，通过模块接口操作
     ui/          原生 HTML/CSS/JavaScript 管理端
-  browser/       可选浏览器模块接口（首版未启用）
+  browser/       可选浏览器接口（未启用）
   tests/         C 单元测试和本地端到端测试
   third_party/   固定版本的 CivetWeb、Lexbor
 ```
+
+每个功能模块通过一对公共 `.h/.c` 提供接口，私有辅助代码放在模块内部。SQL 只在 storage 内部使用，下载模块通过登记回调与持久化解耦。新增网站的注册方法、线程约束和所有权约定见 [模块与爬虫接入规范](docs/modules.md)。
 
 `data/spider.db` 包含规则、历史版本、运行、持久化步骤实例、HTTP 尝试记录、运行会话、结果、文件元数据和事件；下载文件位于 `data/downloads/`。SQLite 使用 WAL、外键与短事务。运行固定使用启动时的规则快照，保存新规则不会改变已有运行。删除爬虫采用软删除，保留历史运行和文件。规则可能包含 Cookie/认证头，数据目录应仅允许运行用户读取；运行日志不输出完整规则。
 
@@ -95,6 +98,7 @@ src/
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/api/health` | 版本、浏览器能力 |
+| GET | `/api/implementations` | 已编译注册的爬虫实现 |
 | GET / POST | `/api/spiders` | 列表、新建 |
 | GET / PUT / DELETE | `/api/spiders/{id}` | 查看、更新、软删除 |
 | POST | `/api/preview` | 提交 `{rule,step_id,context}`，试采集选中 request 步骤 |
@@ -128,6 +132,6 @@ C 核心和存储测试不需要 Python；端到端测试使用 Python 标准库
 
 ## 当前范围
 
-已实现统一工作流编辑、HTML/CSS 与 JSON Pointer 提取、单步骤试采集、列表进入详情、多接口汇合、受控分页与循环、独立下载、显式保存、定时计划、Cookie 会话、步骤级持久化队列、部分失败、重试、取消、按步骤恢复、版本快照、结果/日志/trace 查看和 JSON/CSV 导出。所有采集使用同一工作流执行器。
+已实现统一工作流编辑、HTML/CSS 与 JSON Pointer 提取、单步骤试采集、列表进入详情、多接口汇合、受控分页与循环、独立下载、显式保存、定时计划、Cookie 会话、步骤级持久化队列、部分失败、重试、取消、按步骤恢复、版本快照、结果/日志/trace 查看和 JSON/CSV 导出。JSON 工作流和新增原生 C 爬虫统一注册，并受同一调度器管理。
 
 浏览器点选/录制、JavaScript 渲染、正则转换、cron/独立时区、分布式、多用户权限、按规则自定义文件名及完整 JSONPath 留待后续版本；配置 `backend` 为非 `http` 会明确报错。

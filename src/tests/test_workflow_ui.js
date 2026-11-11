@@ -36,6 +36,17 @@ assert.deepEqual(initial.steps.map(step => step.type), ['request', 'foreach', 'e
 assert.equal(initial.steps[1].items, '{{steps.request.items}}');
 assert.equal(initial.steps[2].fields.title, '{{input.title}}');
 assert.throws(() => run(`showRule({name:'legacy',url:'https://example.com',fields:[{name:'title'}]})`), /schema_version/);
+// Native C crawler configs must round-trip without being rewritten as workflows.
+context.nativeConfig = {name:'Native site',implementation:'site-a',url:'https://example.com/audio',interval_seconds:60,enabled:true,custom:{token:'keep-server-value'}};
+run('showRule(nativeConfig)');
+assert.deepEqual(result('readRule()'), context.nativeConfig);
+assert.equal(elements.get('workflow-editor').hidden, true);
+assert.equal(elements.get('native-editor').hidden, false);
+run(`$('native-config').value = JSON.stringify({...nativeConfig,interval_seconds:120});`);
+assert.equal(result('readRule()').interval_seconds, 120);
+run('showRule(workflowDefaults())');
+assert.equal(elements.get('workflow-editor').hidden, false);
+assert.equal(elements.get('native-editor').hidden, true);
 // Dataflow contracts preserve omitted mappings, typed URL refs, and optional response flags.
 assert.ok(result('workflowTypes').includes('transform'));
 assert.equal(elements.get('preview-context').value.includes('"run"'), false);

@@ -2,21 +2,23 @@
 
 网页使用统一工作流编辑器；新建规则默认是 `request → foreach → emit`。request 可直接填写地址、方法、格式与选择器，其他属性可在步骤 JSON 或完整 JSON 编辑器中配置。可以载入界面内的列表/详情示例，或导入 [list-detail.json](../src/rule/examples/list-detail.json)。示例的地址/选择器需要替换为实际目标站点，不是对 example.com 的可用采集承诺。
 
-公开规则统一为 `schema_version: 2`，API 新建、更新、试采集以及网页导入均拒绝 v1 平面规则。SQLite 当前 `user_version = 3`：首次升级在事务内把现有 v1 当前定义转换成普通工作流，追加版本；历史版本、运行 snapshots/items 和 IDs 保持原样。未完成的旧运行标记 failed，不重放。任何无效旧定义导致升级事务回滚和启动报错。升级前停止服务并备份整个数据目录；升级后不承诺旧程序回退支持。详见 [迁移说明](../src/storage/migrations/README.md)。
+JSON 工作流规则使用 `schema_version: 2`，默认实现类型为 `workflow`；其他编译注册的 C 爬虫使用自己的配置。针对工作流，API 新建、更新、试采集以及网页导入均拒绝 v1 平面规则。SQLite 当前 `user_version = 3`：首次升级在事务内把现有 v1 当前定义转换成普通工作流，追加版本；历史版本、运行 snapshots/items 和 IDs 保持原样。未完成的旧运行标记 failed，不重放。任何无效旧定义导致升级事务回滚和启动报错。升级前停止服务并备份整个数据目录；升级后不承诺旧程序回退支持。详见 [迁移说明](../src/storage/migrations/README.md)。
 
 ## 定义与执行
 
 一份规则包含 name、entry、steps，以及可选 vars/defaults/max_steps/interval_seconds/enabled。`entry` 指向起始步骤 ID。步骤 ID 使用字母/下划线开头，后续允许字母、数字、下划线和短横线，最长64字节。一份规则最多256个定义。
 
-每个运行绑定规则快照。定义会实例化成持久化任务；foreach 的每条记录拥有独立 input 和步骤输出，parallel 的分支同样不共享可变 JSON。完成步骤、保存输出、创建后续任务、提交最终记录在同一 SQLite 事务中发生。分组等待期间不占工作线程。默认一个工作线程，一次执行一个步骤；需要并发请求时使用 `--workers 4` 等配置，同一工作流的独立分支及不同运行共享该线程池。delay_ms 是请求步骤自身的等待，不是全局域名限速；即使配置 parallel，单线程仍依次执行可领取的步骤。
+每个运行绑定规则快照。定义会实例化成持久化任务；foreach 的每条记录拥有独立 input 和步骤输出，parallel 的分支同样不共享可变 JSON。完成步骤、保存输出、创建后续任务、提交最终记录在同一 SQLite 事务中发生。
+
+默认 4 个工作线程，一次完整爬虫运行占用一个工作线程。同一运行内部所有步骤、foreach/parallel 分支、网络请求和重试等待均在该线程串行推进；不同爬虫配置可以在不同线程并发。parallel 保留分支汇合语义，不执行并发请求。delay_ms 是请求步骤自身的等待，不是全局域名限速。调度器合并已有任务期间的定时触发，取消后保留爬虫占用直到回调真正退出。详见 [模块说明](modules.md)。
 
 ## 步骤
 
 | type | 配置 | 行为 |
 |---|---|---|
 | request | request、可选 extract、next | 独立 HTTP 请求、响应解析 |
-| foreach | items、body、next | 对数组每个元素启动 body，全部分支结束后运行 next |
-| parallel | branches、next | branches 对象的键为分支名、值为起始步骤，自动等待汇合后运行 next |
+| foreach | items、body、next | 为数组每个元素建立 body，串行推进，全部分支结束后运行 next |
+| parallel | branches、next | branches 对象的键为分支名、值为起始步骤，串行推进各分支，汇合后运行 next |
 | condition | test、then、else | 条件成立/不成立时选择对应步骤，未提供分支则结束 |
 | download | url、可选 headers/headers_origin、next | 使用当前运行会话下载文件，输出 id/url/sha256/bytes |
 | transform | 可选 value、operations、next | 对 JSON 值执行有界转换管道，不写最终结果 |

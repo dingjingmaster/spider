@@ -1,5 +1,4 @@
-#include "storage/storage.h"
-#include "storage/workflow.h"
+#include "storage/private/storage_internal.h"
 #include <pthread.h>
 #include <assert.h>
 #include <stdio.h>

@@ -1,0 +1,112 @@
+#include "status.h"
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+typedef struct Progress {
+    int64_t run, received, total;
+    char phase[80];
+    struct Progress *next;
+} Progress;
+struct Status {
+    Store *store;
+    pthread_mutex_t mutex;
+    Progress *head;
+};
+Status *status_create(Store *store)
+{
+    Status *s = calloc(1, sizeof(*s));
+    if (s) {
+        s->store = store;
+        pthread_mutex_init(&s->mutex, NULL);
+    }
+    return s;
+}
+void status_destroy(Status *s)
+{
+    if (!s)
+        return;
+    while (s->head) {
+        Progress *p = s->head;
+        s->head = p->next;
+        free(p);
+    }
+    pthread_mutex_destroy(&s->mutex);
+    free(s);
+}
+void status_progress(Status *s, int64_t run, const char *phase, int64_t received, int64_t total)
+{
+    if (!s)
+        return;
+    pthread_mutex_lock(&s->mutex);
+    Progress *p = s->head;
+    while (p && p->run != run)
+        p = p->next;
+    if (!p) {
+        p = calloc(1, sizeof(*p));
+        if (p) {
+            p->run = run;
+            p->next = s->head;
+            s->head = p;
+        }
+    }
+    if (p) {
+        if (phase)
+            snprintf(p->phase, sizeof(p->phase), "%s", phase);
+        p->received = received;
+        p->total = total;
+    }
+    pthread_mutex_unlock(&s->mutex);
+}
+void status_forget(Status *s, int64_t run)
+{
+    if (!s)
+        return;
+    pthread_mutex_lock(&s->mutex);
+    Progress **link = &s->head;
+    while (*link && (*link)->run != run)
+        link = &(*link)->next;
+    if (*link) {
+        Progress *p = *link;
+        *link = p->next;
+        free(p);
+    }
+    pthread_mutex_unlock(&s->mutex);
+}
+json_object *status_run(Status *s, int64_t run)
+{
+    json_object *row = store_run(s->store, run);
+    if (!row)
+        return NULL;
+    bool executing = false;
+    pthread_mutex_lock(&s->mutex);
+    for (Progress *p = s->head; p; p = p->next)
+        if (p->run == run) {
+            executing = true;
+            json_object *progress = json_object_new_object();
+            json_object_object_add(progress, "phase", json_object_new_string(p->phase));
+            json_object_object_add(progress, "received", json_object_new_int64(p->received));
+            json_object_object_add(progress, "total", json_object_new_int64(p->total));
+            json_object_object_add(row, "progress", progress);
+            break;
+        }
+    pthread_mutex_unlock(&s->mutex);
+    json_object_object_add(row, "execution_active", json_object_new_boolean(executing));
+    return row;
+}
+json_object *status_runs(Status *s, int64_t id, char *e, size_t n)
+{
+    return store_runs(s->store, id, e, n);
+}
+json_object *status_events(Status *s, int64_t id, char *e, size_t n)
+{
+    return store_events(s->store, id, e, n);
+}
+json_object *status_steps(Status *s, int64_t id, char *e, size_t n)
+{
+    return store_steps(s->store, id, e, n);
+}
+json_object *status_step(Status *s, int64_t run, int64_t step)
+{
+    return store_step(s->store, run, step);
+}

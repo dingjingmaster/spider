@@ -259,7 +259,19 @@ def main():
             # Wait for a real in-flight fetch before testing graceful recovery.
             recipe_api(f"/api/spiders/{slow}", "PUT", {**rule, "name": "Slow recovery", "url": target + "/slow", "max_pages": 1})
             Fixture.slow_started.clear()
-            recover = api(f"/api/spiders/{slow}/run", "POST", {}, 201)["id"]
+            for _ in range(200):
+                request = urllib.request.Request(base + f"/api/spiders/{slow}/run", data=b"{}", method="POST", headers={"Content-Type":"application/json", "X-Spider-Request":"1"})
+                try:
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        assert response.status == 201
+                        recover = json.loads(response.read())["id"]
+                    break
+                except urllib.error.HTTPError as error:
+                    assert error.code == 409
+                    error.close()
+                    time.sleep(.025)
+            else:
+                raise AssertionError("cancelled crawler did not release its execution slot")
             assert Fixture.slow_started.wait(5)
             p.send_signal(signal.SIGTERM)
             assert p.wait(timeout=10) == 0

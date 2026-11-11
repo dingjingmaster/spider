@@ -1,6 +1,5 @@
-#include "rule/workflow.h"
 #include "rule/rule.h"
-#include "engine/workflow.h"
+#include "spiders/workflow/private/engine.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

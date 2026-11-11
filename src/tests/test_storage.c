@@ -1,5 +1,4 @@
-#include "storage/storage.h"
-#include "storage/workflow.h"
+#include "storage/private/storage_internal.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -185,8 +184,74 @@ static void invalid_rolls_back(void)
     sqlite3_close(db);
     unlink(path);
 }
+static void native_item_atomicity(void)
+{
+    Store s;
+    char e[SP_ERROR] = {0};
+    assert(!store_open(&s, ":memory:", e, sizeof(e)));
+    json_object *config = parse("{\"name\":\"native\",\"implementation\":\"fixture\"}");
+    int64_t spider = store_save_spider(&s, 0, config, e, sizeof(e));
+    assert(spider > 0);
+    int64_t run = store_start_run(&s, spider, e, sizeof(e));
+    assert(run > 0);
+    json_object *claimed = store_claim_run(&s, NULL, 0, e, sizeof(e));
+    assert(claimed);
+    json_object_put(claimed);
+    json_object *item = parse("{\"value\":7}");
+    assert(!sqlite3_exec(s.db,
+                         "CREATE TRIGGER deny_native_counter BEFORE UPDATE OF item_count ON runs "
+                         "BEGIN SELECT RAISE(ABORT,'counter rejected'); END",
+                         NULL, NULL, NULL));
+    assert(store_emit(&s, run, "item", "native://fixture", item, e, sizeof(e)) < 0);
+    assert(scalar(s.db, "SELECT count(*) FROM items") == 0);
+    assert(!sqlite3_exec(s.db, "DROP TRIGGER deny_native_counter", NULL, NULL, NULL));
+    assert(!store_emit(&s, run, "item", "native://fixture", item, e, sizeof(e)));
+    assert(!store_emit(&s, run, "item", "native://fixture", item, e, sizeof(e)));
+    assert(scalar(s.db, "SELECT count(*) FROM items") == 1);
+    assert(scalar(s.db, "SELECT item_count FROM runs") == 1);
+    assert(!store_cancel_run(&s, run));
+    assert(store_emit(&s, run, "late", "native://fixture", item, e, sizeof(e)) < 0);
+    assert(scalar(s.db, "SELECT count(*) FROM items") == 1);
+    json_object_put(item);
+    json_object_put(config);
+    store_close(&s);
+}
+static void native_csv_export(void)
+{
+    Store s;
+    char e[SP_ERROR] = {0};
+    assert(!store_open(&s, ":memory:", e, sizeof(e)));
+    const char *configs[] = {
+        "{\"name\":\"native\",\"implementation\":\"fixture\"}",
+        "{\"name\":\"native fields\",\"implementation\":\"fixture\",\"fields\":\"site-specific "
+        "option\"}"};
+    for (size_t i = 0; i < 2; i++) {
+        json_object *config = parse(configs[i]);
+        int64_t spider = store_save_spider(&s, 0, config, e, sizeof(e));
+        assert(spider > 0);
+        int64_t run = store_start_run(&s, spider, e, sizeof(e));
+        assert(run > 0);
+        json_object *claimed = store_claim_run(&s, NULL, 0, e, sizeof(e));
+        assert(claimed);
+        json_object_put(claimed);
+        json_object *item = parse("{\"title\":\"hello\",\"value\":7}");
+        assert(!store_emit(&s, run, "one", "native://fixture", item, e, sizeof(e)));
+        char *body = NULL;
+        size_t size = 0;
+        assert(!store_export(&s, run, true, &body, &size, e, sizeof(e)));
+        assert(!strcmp(body, "\"title\",\"value\"\r\n\"hello\",\"7\"\r\n"));
+        assert(size == strlen(body));
+        free(body);
+        assert(!store_finish_run(&s, run, "succeeded", ""));
+        json_object_put(config);
+        json_object_put(item);
+    }
+    store_close(&s);
+}
 int main(void)
 {
+    native_csv_export();
+    native_item_atomicity();
     regression();
     version3_migration();
     invalid_rolls_back();
