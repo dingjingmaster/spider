@@ -17,6 +17,7 @@ let fetcher = async url => responses[url] || [];
 const context = vm.createContext({
   document: {getElementById: id => { assert.ok(elements.has(id), `Missing element ${id}`); return elements.get(id); }, createElement: tag => new Element(tag), hidden: false},
   sessionStorage: {getItem: () => '', setItem: () => {}},
+  confirm: () => true,
   fetch: async (url, options) => { requests.push({url, options}); return {ok: true, json: async () => fetcher(url)}; },
   setInterval: () => {}, console
 });
@@ -93,5 +94,17 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '../web/ui/app.js'), 'utf8'
   await oldUnauthorized;
   assert.equal(elements.get('connection').textContent, '服务已连接');
   assert.equal(elements.get('token-panel').hidden, true);
-  console.log('dashboard UI passed: status rendering, GET-only requests, stale selection protection');
+  let posted = null;
+  context.fetch = async (url, options) => {
+    if (url === '/api/spiders/1/run') {
+      posted = {url, options};
+      return {ok: true, json: async () => ({id: 42})};
+    }
+    return {ok: true, json: async () => []};
+  };
+  await run('runSpider({id: 1, name: "Manual"})');
+  assert.ok(posted, 'manual run must POST');
+  assert.equal(posted.options.method, 'POST');
+  assert.equal(posted.options.headers['X-Spider-Request'], '1');
+  console.log('dashboard UI passed: status rendering, GET-only requests, stale selection protection, manual run');
 })().catch(error => { console.error(error); process.exitCode = 1; });

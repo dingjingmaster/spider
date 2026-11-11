@@ -15,6 +15,11 @@
 
 static volatile sig_atomic_t interrupted;
 
+static int64_t submit_run(void *context, int64_t spider, char *error, size_t cap)
+{
+    return scheduler_submit(context, spider, error, cap);
+}
+
 
 static void stop_signal(int sig)
 {
@@ -209,7 +214,8 @@ int main(int argc, char **argv)
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
-    WebConfig config = {.listen = app.listen, .ui_directory = app.ui_dir, .token = app.token};
+    WebConfig config = {.listen = app.listen, .ui_directory = app.ui_dir, .token = app.token,
+                        .submit = submit_run, .submit_context = scheduler};
 
     web = web_start(&config, status, error, sizeof(error));
     if (!web) {

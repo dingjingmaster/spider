@@ -19,9 +19,10 @@ def main():
         sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     base=f'http://127.0.0.1:{port}'
     ui=str(pathlib.Path(__file__).resolve().parents[1]/'web/ui')
-    def api(path,method='GET',body=None,expected=200,token=True):
+    def api(path,method='GET',body=None,expected=200,token=True,control=False):
         headers={'Authorization':'Bearer fixture-token'} if token else {}
         if body is not None:headers['Content-Type']='application/json'
+        if control:headers['X-Spider-Request']='1'
         request=urllib.request.Request(base+path,method=method,headers=headers,data=None if body is None else json.dumps(body).encode())
         try:response=opener.open(request,timeout=5)
         except urllib.error.HTTPError as error:response=error
@@ -53,6 +54,15 @@ def main():
                 time.sleep(.02)
             else:raise AssertionError(rows)
             assert by_key['idle']['latest_run_id'] is None
+            api(f"/api/spiders/{ids['idle']}/run",'POST',expected=400)
+            started=api(f"/api/spiders/{ids['idle']}/run",'POST',expected=201,control=True)
+            for _ in range(200):
+                history=api(f"/api/runs?spider_id={ids['idle']}")
+                manual=next((row for row in history if row['id']==started['id']),None)
+                if manual and manual.get('finished_at') is not None:break
+                time.sleep(.02)
+            else:raise AssertionError(started)
+            assert manual['status']=='succeeded',manual
             for key in ['good','bad']:
                 history=api(f"/api/runs?spider_id={ids[key]}");assert history
                 terminal=next(row for row in history if row['status'] in ('succeeded','failed'))
@@ -61,8 +71,10 @@ def main():
                 assert run['finished_at'] is not None
                 if key=='bad':assert run['error']=='fixture download failed'
                 api(f"/api/runs/{terminal['id']}/events")
-            for method,path in [('POST','/api/spiders'),('PUT',f"/api/spiders/{ids['good']}"),('DELETE',f"/api/spiders/{ids['good']}"),('POST',f"/api/spiders/{ids['good']}/run"),('POST','/api/preview'),('POST','/api/runs/1/stop')]:
+            for method,path in [('POST','/api/spiders'),('PUT',f"/api/spiders/{ids['good']}"),('DELETE',f"/api/spiders/{ids['good']}"),('POST','/api/preview'),('POST','/api/runs/1/stop')]:
                 api(path,method,{},405)
+            for method in ['PUT','DELETE']:
+                api(f"/api/spiders/{ids['good']}/run",method,{},405)
             api('/api/runs/1',expected=404)
             api('/api/spiders/1',expected=404)
             stop(process)
@@ -76,14 +88,16 @@ def main():
             assert {row['code_id']:row['id'] for row in rows}=={key:ids[key] for key in ['good','idle']}
             api(f"/api/spiders/{ids['bad']}",expected=404)
             stop(process)
-            # The real product has no site task in code yet; historical tasks stay dormant.
+            # The real product registers its own code task; fixture history stays dormant.
             process=start(product)
-            assert api('/api/spiders')==[]
+            product_rows=api('/api/spiders')
+            assert {row['code_id'] for row in product_rows}=={'archive-org-chinese-music'},product_rows
             assert api('/api/runs')==[]
             stop(process)
             with sqlite3.connect(pathlib.Path(directory,'spider.db')) as db:
                 assert db.execute('SELECT count(*) FROM runs').fetchone()[0]>0
-                assert db.execute('SELECT count(*) FROM spiders WHERE enabled=1').fetchone()[0]==0
+                enabled={row[0] for row in db.execute('SELECT name FROM spiders WHERE enabled=1')}
+                assert enabled<={'archive.org 华语音乐'},enabled
                 assert db.execute('SELECT count(*) FROM runs WHERE status IN (\'queued\',\'running\')').fetchone()[0]==0
             print('code status integration passed: schedules, outcomes, stable IDs, removals, read-only API')
         finally:

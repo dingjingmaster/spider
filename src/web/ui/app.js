@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {spiders: [], runs: [], spider: null, run: null, token: sessionStorage.getItem('spider-token') || '', refreshSequence: 0, historySequence: 0, runSequence: 0};
+const state = {spiders: [], runs: [], spider: null, run: null, token: sessionStorage.getItem('spider-token') || '', refreshSequence: 0, refreshAttempt: 0, historySequence: 0, runSequence: 0};
 const statuses = {idle: '未执行', queued: '排队中', running: '运行中', succeeded: '成功', failed: '失败', partial: '部分成功', cancelled: '已取消'};
 function node(tag, text, cls) { const value = document.createElement(tag); if (text !== undefined) value.textContent = text; if (cls) value.className = cls; return value; }
 function time(value) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(); }
@@ -9,15 +9,39 @@ function statusText(row) { return row.execution_active && !['running', 'queued']
 function badge(row) { return node('span', statusText(row), `status ${Object.hasOwn(statuses, row.status) ? row.status : 'idle'}`); }
 function notify(error) { $('notice').textContent = error.message || String(error); $('notice').hidden = false; }
 async function api(path) {
+  const attempt = state.refreshAttempt;
   const headers = state.token ? {Authorization: `Bearer ${state.token}`} : {};
   const response = await fetch(path, {method: 'GET', headers});
   if (!response.ok) {
     let message = `查询失败 (${response.status})`;
     try { message = (await response.json()).error || message; } catch (_) {}
+    if (response.status === 401 && state.refreshAttempt === attempt) $('token-panel').hidden = false;
+    throw new Error(message);
+  }
+  return response.json();
+}
+async function post(path) {
+  const headers = state.token ? {Authorization: `Bearer ${state.token}`} : {};
+  headers['X-Spider-Request'] = '1';
+  const response = await fetch(path, {method: 'POST', headers});
+  if (!response.ok) {
+    let message = `操作失败 (${response.status})`;
+    try { message = (await response.json()).error || message; } catch (_) {}
     if (response.status === 401) $('token-panel').hidden = false;
     throw new Error(message);
   }
   return response.json();
+}
+async function runSpider(row) {
+  if (!confirm(`立即运行「${row.name}」？`)) return;
+  try {
+    const result = await post(`/api/spiders/${row.id}/run`);
+    $('notice').textContent = `已提交运行 #${result.id}`;
+    $('notice').hidden = false;
+    state.spider = row.id;
+    state.refreshSequence++;
+    await refreshDashboard();
+  } catch (error) { notify(error); }
 }
 function renderSpiders() {
   $('spiders').replaceChildren(); $('empty-state').hidden = state.spiders.length > 0;
@@ -31,7 +55,13 @@ function renderSpiders() {
     choose.onclick = () => selectSpider(row.id).catch(notify); name.append(choose, node('small', row.code_id, 'code-id'));
     const plan = !row.enabled ? '未启用' : row.interval_seconds > 0 ? `每 ${row.interval_seconds} 秒` : '未设置定时';
     const status = node('td'); status.append(badge(row));
-    tr.append(name, node('td', plan), status, node('td', `${row.successes || 0} / ${row.failures || 0}`), node('td', time(row.started_at)), node('td', row.enabled && row.interval_seconds > 0 ? time(row.next_run) : '—'));
+    const action = node('td');
+    const running = row.status === 'running' || row.execution_active;
+    const run = node('button', running ? '运行中' : '运行', 'run-button');
+    run.disabled = running;
+    run.onclick = () => runSpider(row);
+    action.append(run);
+    tr.append(name, node('td', plan), status, node('td', `${row.successes || 0} / ${row.failures || 0}`), node('td', time(row.started_at)), node('td', row.enabled && row.interval_seconds > 0 ? time(row.next_run) : '—'), action);
     $('spiders').append(tr);
   }
 }
@@ -87,7 +117,15 @@ async function refreshDashboard() {
   if (state.refreshSequence !== sequence) return;
   $('connection').textContent = '服务已连接'; $('updated-at').textContent = `更新于 ${new Date().toLocaleTimeString()}`; $('notice').hidden = true;
 }
-async function refresh() { try { await refreshDashboard(); } catch (error) { $('connection').textContent = '连接失败'; notify(error); } }
+async function refresh() {
+  const attempt = ++state.refreshAttempt;
+  try { await refreshDashboard(); }
+  catch (error) {
+    if (state.refreshAttempt !== attempt) return;
+    $('connection').textContent = '连接失败';
+    notify(error);
+  }
+}
 $('refresh').onclick = async () => { $('refresh').disabled = true; try { await refresh(); } finally { $('refresh').disabled = false; } };
 $('token-toggle').onclick = () => { $('token-panel').hidden = !$('token-panel').hidden; };
 $('token-save').onclick = () => { state.token = $('token').value; sessionStorage.setItem('spider-token', state.token); state.refreshSequence++; state.historySequence++; state.runSequence++; refresh(); };

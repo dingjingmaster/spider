@@ -7,6 +7,8 @@
 #include <inttypes.h>
 struct Web {
     Status *status;
+    WebSubmit submit;
+    void *submit_context;
     struct mg_context *server;
     char listen[128], ui_dir[SP_PATH], token[256];
 };
@@ -73,12 +75,41 @@ static int handler(struct mg_connection *c, void *context)
             if (!auth || strncmp(auth, "Bearer ", 7) || !token_equal(auth + 7, app->token))
                 return error_json(c, 401, "API token required");
         }
-        if (!get)
+        if (!get) {
+            int64_t id = 0;
+            int used = 0;
+            if (!strcmp(r->request_method, "POST") &&
+                sscanf(path, "/api/spiders/%" SCNd64 "/run%n", &id, &used) == 1 && id > 0 &&
+                !path[used]) {
+                const char *control = mg_get_header(c, "X-Spider-Request");
+                if (!control || strcmp(control, "1"))
+                    return error_json(c, 400, "Missing X-Spider-Request header");
+                if (!app->submit)
+                    return error_json(c, 501, "Manual run is not available");
+                json_object *row = status_spider(app->status, id);
+                if (!row)
+                    return error_json(c, 404, "Code crawler not found");
+                json_object_put(row);
+                int64_t run = app->submit(app->submit_context, id, e, sizeof(e));
+                if (run > 0) {
+                    json_object *result = json_object_new_object();
+                    json_object_object_add(result, "id", json_object_new_int64(run));
+                    return send_json(c, 201, result);
+                }
+                if (strstr(e, "executing") || strstr(e, "active run"))
+                    return error_json(c, 409, e[0] ? e : "Crawler is already running");
+                if (strstr(e, "stopped"))
+                    return error_json(c, 503, e[0] ? e : "Scheduler is stopped");
+                return error_json(c, 500, e[0] ? e : "Cannot start crawler run");
+            }
             return error_json(c, 405, "Status API is read-only");
+        }
         if (!strcmp(path, "/api/health")) {
             json_object *row = json_object_new_object();
             json_object_object_add(row, "version", json_object_new_string("0.1.0"));
-            json_object_object_add(row, "read_only", json_object_new_boolean(true));
+            json_object_object_add(row, "read_only", json_object_new_boolean(false));
+            json_object_object_add(row, "manual_run",
+                                   json_object_new_boolean(app->submit != NULL));
             return send_json(c, 200, row);
         }
         if (!strcmp(path, "/api/spiders")) {
@@ -178,6 +209,8 @@ Web *web_start(const WebConfig *config, Status *status, char *e, size_t n)
         return NULL;
     }
     web->status = status;
+    web->submit = config->submit;
+    web->submit_context = config->submit_context;
     if (strlen(config->listen) >= sizeof(web->listen) ||
         strlen(config->ui_directory) >= sizeof(web->ui_dir) ||
         (config->token && strlen(config->token) >= sizeof(web->token))) {

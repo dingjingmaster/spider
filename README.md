@@ -1,6 +1,6 @@
 # Spider
 
-C 实现的单机爬虫服务：在 `src/spiders/` 编写并注册网站采集逻辑，由调度器定时运行，将结果保存到 SQLite、文件保存到本地磁盘。Web 页面只显示已注册爬虫及其运行状态、成功/失败历史和错误原因。
+C 实现的单机爬虫服务：在 `src/spiders/` 编写并注册网站采集逻辑，由调度器定时运行，将结果保存到 SQLite、文件保存到本地磁盘。Web 页面显示已注册爬虫及其运行状态、成功/失败历史和错误原因，并可手动触发一次运行。
 
 ## 构建和启动
 
@@ -28,7 +28,17 @@ cmake --build build -j
 2. 注册实现类型，再在代码中调用 `crawler_add(registry, stable_code_id, implementation, config, ...)` 登记任务的名称、参数和执行周期。
 3. 在 `src/spiders/spiders.c` 调用该网站的注册函数，把 `.c` 加入 `src/CMakeLists.txt` 后重新编译。
 
-完整示例、所有权和恢复约定见 [模块与爬虫接入规范](docs/modules.md)。当前仓库保留 `spiders/workflow/` 通用工作流引擎，尚未登记具体业务网站任务。它也可以由代码提交固定工作流任务，协议参考 [工作流引擎说明](docs/workflows.md)。网页不提供爬虫创建、编辑、导入、试采集、手动运行或停止操作。
+完整示例、所有权和恢复约定见 [模块与爬虫接入规范](docs/modules.md)。当前仓库保留 `spiders/workflow/` 通用工作流引擎，并内置 `spiders/archive_org/` 音乐爬虫；默认任务 `archive-org-chinese-music` 以 `mode=scan` 注册、默认不启用，可在网页点“运行”手动触发一次。它也可以由代码提交固定工作流任务，协议参考 [工作流引擎说明](docs/workflows.md)。网页提供状态看板和手动运行；不提供爬虫创建、编辑、导入、试采集或停止操作。
+
+## archive.org 音乐任务
+
+`spiders/archive_org/` 注册实现 `archive-org`，并登记任务 `archive-org-chinese-music`。默认 `enabled:false`、`mode:scan`；在 `src/spiders/archive_org/archive_org.c` 修改默认配置后重新编译启动。
+
+- `mode:"scan"`：按 `queries` 分页搜索，逐条读取 metadata，过滤后把候选写入通用下载目录，不下载音频。
+- `mode:"download"`：从 `download_items` 取 `decision=include` 的队列，按 `download_root` + `artist/title` 落盘，默认 `on_exists=skip`。
+- 过滤信号：标题/creator/文件名的中文字符占比、subject/language、歌手白名单、排除关键词与 collection、时长和大小。大合集里没有中文文件名、也未命中白名单的条目会被拒绝。
+- `download_root` 必须是绝对路径；`download_limit` 控制单次下载数量；`delay_ms` 控制请求间隔；`max_items` 和 `max_pages` 用于先小批量验证。
+- 结果位于 `download_sources`、`download_items`、`music_tracks`，可直接查询 `music_downloads` 视图。
 
 ## 调度
 
@@ -47,13 +57,14 @@ src/
   main/          初始化、CLI、信号和单实例锁
   crawler/       爬虫接口、实现注册、代码任务目录、独立运行上下文
   spiders/       各网站实现与统一注册入口
+    archive_org/ archive.org 音频扫描、过滤与下载
     workflow/    可供代码复用的 JSON 工作流引擎
   scheduler/     定时线程、固定工作线程池、完整运行调度
   download/      HTTP、Cookie、流式下载、文件发布与进度
   parser/        HTML/CSS、JSON Pointer、字段类型转换
   storage/       SQLite、代码 ID 映射、快照、检查点、结果和事务
   status/        当前代码任务的只读状态、进度和历史查询
-  web/           只读 HTTP API
+  web/           状态 HTTP API、手动运行控制与看板
     ui/          状态看板
   rule/          工作流校验、模板与旧格式升级
   common/ model/ 通用工具和类型
@@ -62,7 +73,7 @@ src/
   third_party/   CivetWeb、Lexbor
 ```
 
-每个功能模块通过一对公共 `.h/.c` 提供功能，辅助实现位于 `private/`。SQLite/SQL 仅在 storage 内部，下载模块通过回调登记文件，Web 只依赖 status 模块。
+每个功能模块通过一对公共 `.h/.c` 提供功能，辅助实现位于 `private/`。SQLite/SQL 仅在 storage 内部，下载模块通过回调登记文件，Web 只依赖 status 模块和注入的 submit 回调。
 
 ## 数据保存
 
@@ -75,20 +86,21 @@ SQLite 使用 WAL、外键和短事务。核心 `user_version` 为 4，新增的
 
 结果记录与步骤推进在事务中保存，网络不占用数据库事务。附件先写临时文件、fsync、重命名，再通过登记回调保存元数据；失败回滚不会删除其他下载已登记的同内容文件。同一运行内登记过且仍可读的 URL 可复用，不等于跨运行资源去重。文件中断后重新下载，目前没有文件字节级续传、磁盘配额或自动历史清理。
 
-## 只读 API
+## Web API
 
-配置 token 后所有 API 要求认证。只接受 GET；POST、PUT、DELETE 等请求返回 405，未认证请求先返回 401。响应不提供规则快照、Cookie 或代码参数。
+配置 token 后所有 API 要求认证；未认证请求先返回 401。响应不提供规则快照、Cookie 或代码参数。
 
 | 路径 | 用途 |
 |---|---|
-| `/api/health` | 版本和只读模式 |
+| `/api/health` | 版本、手动运行能力 |
 | `/api/spiders` | 当前代码任务、最近状态、周期与成功/失败计数 |
 | `/api/spiders/{id}` | 当前代码任务的状态摘要 |
 | `/api/runs?spider_id={id}` | 当前代码任务最近 200 次运行 |
 | `/api/runs/{id}` | 执行状态、时间、错误、结果数和进度 |
 | `/api/runs/{id}/events` | 最近 200 条运行事件 |
+| `POST /api/spiders/{id}/run` | 手动提交一次运行，返回 `{"id": run_id}`；需要 `X-Spider-Request: 1`。任务即使 `enabled:false` 也可以手动运行。 |
 
-历史数据库中已移除的任务继续保留，但不出现在当前状态看板中。
+其余写操作仍返回 405；手动运行不改变定时计划。历史数据库中已移除的任务继续保留，但不出现在当前状态看板中。
 
 ## 验证
 

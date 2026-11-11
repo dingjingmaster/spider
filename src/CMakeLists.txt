@@ -13,6 +13,7 @@ add_library(spider_core STATIC
   storage/private/downloads.c
   download/download.c download/private/http.c download/private/session.c
   crawler/crawler.c status/status.c scheduler/scheduler.c spiders/spiders.c
+  spiders/archive_org/archive_org.c spiders/archive_org/private/filter.c
   spiders/workflow/workflow.c spiders/workflow/private/engine.c spiders/workflow/private/preview.c)
 target_include_directories(spider_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} third_party/lexbor/source)
 target_compile_definitions(spider_core PUBLIC _POSIX_C_SOURCE=200809L _XOPEN_SOURCE=700)
@@ -78,6 +79,15 @@ add_executable(test_download_catalog tests/test_download_catalog.c)
 target_link_libraries(test_download_catalog PRIVATE spider_core)
 target_compile_options(test_download_catalog PRIVATE -UNDEBUG)
 add_test(NAME download_catalog COMMAND test_download_catalog)
+add_executable(test_archive_filter tests/test_archive_filter.c)
+target_link_libraries(test_archive_filter PRIVATE spider_core)
+target_compile_options(test_archive_filter PRIVATE -UNDEBUG)
+add_test(NAME archive_filter COMMAND test_archive_filter)
+add_executable(test_archive_integration tests/test_archive_integration.c)
+target_link_libraries(test_archive_integration PRIVATE spider_core)
+target_compile_options(test_archive_integration PRIVATE -UNDEBUG)
+add_test(NAME archive_integration COMMAND test_archive_integration)
+set_tests_properties(archive_integration PROPERTIES TIMEOUT 20)
 add_executable(spider_status_fixture tests/status_fixture.c web/web.c)
 target_link_libraries(spider_status_fixture PRIVATE spider_core civetweb)
 target_compile_options(spider_status_fixture PRIVATE -Wall -Wextra -Wpedantic -Wshadow)

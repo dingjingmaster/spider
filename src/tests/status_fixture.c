@@ -24,6 +24,10 @@ static int work(CrawlerContext *context, char *e, size_t n)
     }
     return jb(context->config, "fail", false) ? fail(e, n, "fixture download failed") : 0;
 }
+static int64_t submit_run(void *context, int64_t spider, char *error, size_t cap)
+{
+    return scheduler_submit(context, spider, error, cap);
+}
 static int add(CrawlerRegistry *registry, const char *key, const char *raw, char *e, size_t n)
 {
     json_object *config = json_tokener_parse(raw);
@@ -92,7 +96,8 @@ int main(int argc, char **argv)
     if (!scheduler || scheduler_start(scheduler, 2, e, sizeof(e)))
         return 2;
     snprintf(listen, sizeof(listen), "127.0.0.1:%s", port);
-    WebConfig config = {.listen = listen, .ui_directory = ui, .token = "fixture-token"};
+    WebConfig config = {.listen = listen, .ui_directory = ui, .token = "fixture-token",
+                        .submit = submit_run, .submit_context = scheduler};
     Web *web = web_start(&config, status, e, sizeof(e));
     if (!web)
         return 2;
