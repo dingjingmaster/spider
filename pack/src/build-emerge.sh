@@ -99,12 +99,7 @@ src_install() {
 	dosym /opt/spider/bin/spider /usr/bin/spider
 
 	keepdir /var/lib/spider
-	fowners spider:spider /var/lib/spider
 	fperms 0750 /var/lib/spider
-}
-
-pkg_setup() {
-	enewuser spider -1 -1 /var/lib/spider -s /sbin/nologin -c "Spider crawler"
 }
 
 pkg_postinst() {
@@ -129,10 +124,15 @@ postremove_path = pathlib.Path(sys.argv[3])
 gentoo_arch = sys.argv[4]
 
 def script_body(path):
-    return "\n".join(
-        line for line in path.read_text(encoding="utf-8").splitlines()
-        if not line.startswith("#!")
-    )
+    lines = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#!"):
+            continue
+        # pkg_postinst/pkg_postrm must return to Portage, not exit the phase shell.
+        if line.strip() in ("set -e", "exit 0"):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
 
 ebuild = ebuild_path.read_text(encoding="utf-8")
 ebuild = ebuild.replace("__GENERAL_POSTINSTALL__", script_body(postinstall_path))

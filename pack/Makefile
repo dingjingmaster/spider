@@ -1,4 +1,4 @@
-.PHONY: all packages build test rootfs emerge deb rpm clean distclean
+.PHONY: all packages build test rootfs emerge deb rpm install-gentoo clean distclean
 
 osArch                   := $(shell uname -m)
 CC                       ?= gcc
@@ -54,6 +54,10 @@ packages: emerge deb rpm
 
 emerge: rootfs
 	@sh src/build-emerge.sh "$(osArch)" "$(VERSION)"
+
+
+install-gentoo:
+	@sh tools/install-gentoo.sh
 
 
 deb: rootfs

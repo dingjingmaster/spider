@@ -85,16 +85,34 @@ RPM 的 soname 依赖由 rpmbuild 自动生成；安装脚本需要 `shadow-util
 
 ## Gentoo overlay
 
+先以普通用户构建 overlay，再以 root 安装（脚本自动生成 Manifest 并调用 emerge）：
+
 ```sh
-tar -xzf pack/dist/spider-crawler-gentoo-overlay-<arch>-<version>.tar.gz -C /var/db/repos
-# 目录名即仓库名：spider-crawler
-eselect repository enable spider-crawler   # 若使用 eselect-repository
-emerge --sync spider-crawler
-emerge app-admin/spider-crawler
+make -C pack emerge
+sudo pack/tools/install-gentoo.sh
+# 或指定已有的 overlay 包
+sudo pack/tools/install-gentoo.sh pack/dist/spider-crawler-gentoo-overlay-<arch>-<version>.tar.gz
+# 也可以使用 make 目标（不会重新构建）
+sudo make -C pack install-gentoo
+```
+
+脚本会解压到临时目录、校验 ebuild、生成 Manifest，然后以
+`PORTDIR_OVERLAY` 临时仓库方式执行 `emerge --oneshot app-admin/spider-crawler`，
+不会把临时 overlay 留在系统里。
+
+手动安装：
+
+```sh
+tar -xzf pack/dist/spider-crawler-gentoo-overlay-<arch>-<version>.tar.gz
+cd spider-crawler-gentoo-overlay-<arch>-<version>
+ebuild app-admin/spider-crawler/spider-crawler-<version>.ebuild manifest
+PORTDIR_OVERLAY="$PWD" emerge --oneshot app-admin/spider-crawler
 ```
 
 ebuild 使用 `RESTRICT="bindist mirror strip test"`，二进制标记为 `QA_PREBUILT`，
-不会在安装时重新编译或 strip。`pkg_setup` 创建 `spider` 用户，`keepdir` 保留数据目录。
+不会在安装时重新编译或 strip。`keepdir` 保留数据目录，`pkg_postinst`（与 DEB/RPM
+共用同一脚本）创建 `spider` 用户并修正目录属主；systemd 的
+`StateDirectory=spider` 会再次兜底。
 
 ## 注意
 
