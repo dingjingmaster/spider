@@ -7,6 +7,8 @@
 /.worktrees/
 /__pycache__/
 /.superpowers/
+/pack/build/
+/pack/dist/
 *.pyc
 *.o
 *.a

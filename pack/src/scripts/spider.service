@@ -1,0 +1,22 @@
+[Unit]
+Description=Spider crawler service with local web dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spider
+Group=spider
+StateDirectory=spider
+WorkingDirectory=/var/lib/spider
+ExecStart=/opt/spider/bin/spider --host 127.0.0.1 --port 8080 --data-dir /var/lib/spider --ui-dir /opt/spider/share/spider/ui
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/spider
+
+[Install]
+WantedBy=multi-user.target
