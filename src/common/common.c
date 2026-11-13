@@ -17,6 +17,83 @@ json_object *jg(json_object *o, const char *k)
         json_object_object_get_ex(o, k, &v);
     return v;
 }
+
+/* Returns the sequence length implied by a lead byte, or 0 when it cannot start
+ * a valid UTF-8 sequence. Continuation bytes are validated by the caller. */
+static size_t utf8_sequence_length(unsigned char lead)
+{
+    if (lead >= 0xC2 && lead <= 0xDF)
+        return 2;
+    if (lead >= 0xE0 && lead <= 0xEF)
+        return 3;
+    if (lead >= 0xF0 && lead <= 0xF4)
+        return 4;
+    return 0;
+}
+
+char *utf8_repair(const char *text)
+{
+    if (!text)
+        text = "";
+    size_t length = strlen(text);
+    if (length > (SIZE_MAX - 1) / 3)
+        return NULL;
+    char *out = malloc(length * 3 + 1);
+    if (!out)
+        return NULL;
+    const unsigned char *p = (const unsigned char *)text;
+    size_t used = 0;
+    while (*p) {
+        if (*p < 0x80) {
+            out[used++] = (char)*p++;
+            continue;
+        }
+        size_t need = utf8_sequence_length(*p);
+        size_t i = 1;
+        uint32_t cp = need ? (*p & (0x7F >> need)) : 0;
+        for (; need && i < need; i++) {
+            if ((p[i] & 0xC0) != 0x80)
+                break;
+            cp = (cp << 6) | (p[i] & 0x3F);
+        }
+        bool valid = need && i == need && !(need == 3 && cp < 0x800) &&
+                     !(need == 4 && (cp < 0x10000 || cp > 0x10FFFF)) &&
+                     !(cp >= 0xD800 && cp <= 0xDFFF);
+        if (!valid) {
+            memcpy(out + used, "\xEF\xBF\xBD", 3);
+            used += 3;
+            /* Skip the largest invalid subpart so a split character becomes
+             * one replacement rather than one per byte. */
+            p += i;
+            continue;
+        }
+        memcpy(out + used, p, need);
+        used += need;
+        p += need;
+    }
+    out[used] = 0;
+    return out;
+}
+
+void utf8_trim_incomplete(char *text)
+{
+    if (!text)
+        return;
+    size_t length = strlen(text);
+    if (!length)
+        return;
+    size_t start = length;
+    while (start > 0 && (((unsigned char)text[start - 1]) & 0xC0) == 0x80)
+        start--;
+    if (!start)
+        return;
+    unsigned char lead = (unsigned char)text[start - 1];
+    if (lead < 0x80)
+        return;
+    size_t need = utf8_sequence_length(lead);
+    if (!need || length - (start - 1) < need)
+        text[start - 1] = 0;
+}
 const char *js(json_object *o, const char *k, const char *d)
 {
     json_object *v = jg(o, k);

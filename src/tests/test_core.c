@@ -2,6 +2,7 @@
 #include "parser/parser.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static json_object *parse(const char *s)
@@ -85,6 +86,23 @@ int main(void)
     assert(request_validate(rule, error, sizeof(error)) < 0);
     json_object_object_del(rule, "headers");
     json_object_put(rule);
+
+    /* Invalid UTF-8 is replaced at the JSON boundary; split characters are one replacement. */
+    char *fixed = utf8_repair("a\xE3\x80");
+    assert(fixed && !strcmp(fixed, "a\xEF\xBF\xBD"));
+    free(fixed);
+    fixed = utf8_repair("caf\xC3\xA9");
+    assert(fixed && !strcmp(fixed, "caf\xC3\xA9"));
+    free(fixed);
+    fixed = utf8_repair("x\xED\xA0\x80y");
+    assert(fixed && !strcmp(fixed, "x\xEF\xBF\xBDy"));
+    free(fixed);
+    char trimmed[] = "a\xE3\x80";
+    utf8_trim_incomplete(trimmed);
+    assert(!strcmp(trimmed, "a"));
+    char kept[] = "a\xE4\xB8\xAD";
+    utf8_trim_incomplete(kept);
+    assert(!strcmp(kept, "a\xE4\xB8\xAD"));
     puts("core tests passed");
     return 0;
 }

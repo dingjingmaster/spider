@@ -295,6 +295,7 @@ static void safe_component(const char *input, char *out, size_t cap)
     out[used] = 0;
     while (used && (out[used - 1] == ' ' || out[used - 1] == '.'))
         out[--used] = 0;
+    utf8_trim_incomplete(out);
     for (size_t i = 0; out[i]; i++)
         if (out[i] != ' ') {
             if (i)

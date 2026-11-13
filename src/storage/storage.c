@@ -151,11 +151,14 @@ static json_object *row_json(sqlite3_stmt *q)
             v = json_object_new_double(sqlite3_column_double(q, i));
         else if (type != SQLITE_NULL) {
             const char *str = (const char *)sqlite3_column_text(q, i);
+            char *fixed = utf8_repair(str);
+            const char *text = fixed ? fixed : str;
             if (!strcmp(key, "rule") || !strcmp(key, "snapshot") || !strcmp(key, "data") ||
                 !strcmp(key, "context") || !strcmp(key, "output"))
-                v = json_tokener_parse(str);
+                v = json_tokener_parse(text);
             else
-                v = json_object_new_string(str);
+                v = json_object_new_string(text);
+            free(fixed);
         }
         json_object_object_add(o, key, v);
     }

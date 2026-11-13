@@ -44,10 +44,13 @@ static json_object *row(sqlite3_stmt *q)
             v = json_object_new_int64(sqlite3_column_int64(q, i));
         else if (sqlite3_column_type(q, i) != SQLITE_NULL) {
             const char *value = (const char *)sqlite3_column_text(q, i);
+            char *fixed = utf8_repair(value);
+            const char *text = fixed ? fixed : value;
             if (!strcmp(key, "context") || !strcmp(key, "snapshot") || !strcmp(key, "output"))
-                v = json_tokener_parse(value);
+                v = json_tokener_parse(text);
             else
-                v = json_object_new_string(value);
+                v = json_object_new_string(text);
+            free(fixed);
         }
         json_object_object_add(o, key, v);
     }

@@ -209,6 +209,7 @@ static void without_extension(const char *name, char *out, size_t cap)
         len = cap - 1;
     memcpy(out, name, len);
     out[len] = 0;
+    utf8_trim_incomplete(out);
 }
 
 static const char *separator(const char *name)
@@ -263,6 +264,10 @@ void archive_artist_title(const char *file_name, const char *file_artist,
         trim(title);
     } else
         without_extension(base, title, title_cap);
+    /* snprintf/memcpy truncate at byte boundaries; drop a split character so
+     * callers never see invalid UTF-8. */
+    utf8_trim_incomplete(artist);
+    utf8_trim_incomplete(title);
 }
 
 size_t archive_file_size(json_object *file)

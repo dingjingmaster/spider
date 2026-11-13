@@ -23,5 +23,9 @@ bool url_same_origin(const char *a, const char *b);
 int64_t now_ms(void);
 void sleep_ms(int milliseconds);
 char *trim_copy(const char *text, size_t len);
+/* Replaces every invalid UTF-8 byte/sequence with U+FFFD; caller frees. */
+char *utf8_repair(const char *text);
+/* Drops a trailing incomplete UTF-8 sequence in place. */
+void utf8_trim_incomplete(char *text);
 int sha256_file(const char *path, char hex[65]);
 #endif

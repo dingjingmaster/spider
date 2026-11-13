@@ -84,12 +84,15 @@ static json_object *row(sqlite3_stmt *q)
             value = json_object_new_double(sqlite3_column_double(q, i));
         else if (type != SQLITE_NULL) {
             const char *raw = (const char *)sqlite3_column_text(q, i);
+            char *fixed = utf8_repair(raw);
+            const char *text = fixed ? fixed : raw;
             if (json_key(key)) {
-                value = json_tokener_parse(raw);
+                value = json_tokener_parse(text);
                 if (!value)
-                    value = json_object_new_string(raw);
+                    value = json_object_new_string(text);
             } else
-                value = json_object_new_string(raw);
+                value = json_object_new_string(text);
+            free(fixed);
         }
         if (value)
             json_object_object_add(object, key, value);
@@ -399,11 +402,11 @@ json_object *store_download_queue(Store *s, const char *spider_code, const char 
     const char *sql;
     if (media_type && !strcmp(media_type, "music"))
         sql = "SELECT * FROM music_downloads WHERE spider_code=?1 AND decision='include' AND "
-              "status IN('pending','failed') AND attempts<3 AND (?3=1 OR id % ?3 = ?2) "
+              "status IN('pending','failed') AND (?3=1 OR id % ?3 = ?2) "
               "ORDER BY score DESC,id LIMIT ?4";
     else if (media_type && !strcmp(media_type, "novel"))
         sql = "SELECT * FROM novel_downloads WHERE spider_code=?1 AND decision='include' AND "
-              "status IN('pending','failed') AND attempts<3 AND (?3=1 OR id % ?3 = ?2) "
+              "status IN('pending','failed') AND (?3=1 OR id % ?3 = ?2) "
               "ORDER BY score DESC,id LIMIT ?4";
     else
         sql = "SELECT d.*,s.identifier AS item_identifier,s.item_url,s.title AS item_title,"
@@ -412,7 +415,7 @@ json_object *store_download_queue(Store *s, const char *spider_code, const char 
               "s.rights,s.region FROM download_items d JOIN download_sources s ON "
               "s.id=d.source_id WHERE d.spider_code=?1 AND (?2='' OR ?2 IS NULL OR "
               "d.media_type=?2) AND d.decision='include' AND d.status IN('pending','failed') AND "
-              "d.attempts<3 AND (?4=1 OR d.id % ?4 = ?3) ORDER BY d.score DESC,d.id LIMIT ?5";
+              "(?4=1 OR d.id % ?4 = ?3) ORDER BY d.score DESC,d.id LIMIT ?5";
     pthread_mutex_lock(&s->mutex);
     sqlite3_stmt *q = prepare(s, sql);
     json_object *rows = NULL;
@@ -453,8 +456,7 @@ int store_download_start(Store *s, const char *download_url, int64_t run_id, cha
     pthread_mutex_lock(&s->mutex);
     sqlite3_stmt *q = prepare(
         s, "UPDATE download_items SET status='downloading',attempts=attempts+1,last_run_id=?2,"
-           "error='',updated_at=?3 WHERE download_url=?1 AND status IN('pending','failed') AND "
-           "attempts<3");
+           "error='',updated_at=?3 WHERE download_url=?1 AND status IN('pending','failed')");
     int rc = -1;
     if (!q)
         fail(e, n, "SQLite: %s", sqlite3_errmsg(s->db));

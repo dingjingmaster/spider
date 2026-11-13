@@ -14,6 +14,40 @@ static json_object *parse(const char *raw)
     return o;
 }
 
+static bool valid_utf8(const char *text)
+{
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        size_t length;
+        uint32_t cp;
+        if (*p < 0x80) {
+            p++;
+            continue;
+        } else if (*p >= 0xC2 && *p <= 0xDF) {
+            length = 2;
+            cp = *p & 0x1F;
+        } else if (*p >= 0xE0 && *p <= 0xEF) {
+            length = 3;
+            cp = *p & 0x0F;
+        } else if (*p >= 0xF0 && *p <= 0xF4) {
+            length = 4;
+            cp = *p & 0x07;
+        } else {
+            return false;
+        }
+        for (size_t i = 1; i < length; i++) {
+            if ((p[i] & 0xC0) != 0x80)
+                return false;
+            cp = (cp << 6) | (p[i] & 0x3F);
+        }
+        if ((length == 3 && cp < 0x800) || (length == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+            (cp >= 0xD800 && cp <= 0xDFFF))
+            return false;
+        p += length;
+    }
+    return true;
+}
+
 static char *make_path(char *path, size_t cap)
 {
     snprintf(path, cap, "/tmp/spider-dlcat-XXXXXX");
@@ -218,15 +252,17 @@ static void test_lifecycle_and_retry(void)
     assert(json_object_array_length(queue) == 1);
     json_object_put(queue);
 
-    /* Failed rows stay queued until three attempts are used. */
+    /* Failed rows stay queued indefinitely; attempts never give up. */
     const char *url2 = "https://archive.org/download/vol-1/b.mp3";
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 5; i++) {
         assert(store_download_start(s, url2, 8, error, sizeof(error)) == 0);
         assert(store_download_finish(s, url2, "failed", NULL, NULL, -1, "boom", error,
                                      sizeof(error)) == 0);
     }
+    assert(scalar_text(s->db, "SELECT attempts FROM download_items WHERE download_url=?1", url2) ==
+           5);
     queue = fetch_queue(s, "music");
-    assert(json_object_array_length(queue) == 0);
+    assert(json_object_array_length(queue) == 1);
     json_object_put(queue);
 
     json_object *summary = store_download_summary(s, "sp", error, sizeof(error));
@@ -507,6 +543,28 @@ static void test_download_recovery(void)
     unlink(path);
 }
 
+static void test_library_repairs_invalid_utf8(void)
+{
+    char path[64];
+    Store *s = open_store(path, sizeof(path));
+    char error[SP_ERROR] = {0};
+    json_object *source = source_json("archive.org", "music", "vol-bad", "Bad Volume");
+    json_object *items = json_object_new_array();
+    json_object_array_add(items, music_item("bad", "https://archive.org/download/vol-bad/bad.mp3",
+                                            "Artist \xe3\x80", "Title", 5, "include"));
+    assert(store_download_scan(s, 7, source, items, error, sizeof(error)) == 0);
+    json_object_put(source);
+    json_object_put(items);
+    json_object *page = store_library_page(s, "music", "", 1, 20, error, sizeof(error));
+    assert(page);
+    const char *raw = json_object_to_json_string_ext(page, JSON_C_TO_STRING_PLAIN);
+    assert(valid_utf8(raw));
+    assert(strstr(raw, "\xef\xbf\xbd"));
+    json_object_put(page);
+    store_destroy(s);
+    unlink(path);
+}
+
 int main(void)
 {
     test_schema();
@@ -517,6 +575,7 @@ int main(void)
     test_duplicate_url_rolls_back();
     test_migration_from_v3();
     test_library_pages();
+    test_library_repairs_invalid_utf8();
     test_download_recovery();
     puts("download catalog passed");
     return 0;

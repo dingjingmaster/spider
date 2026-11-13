@@ -131,7 +131,7 @@ Web 只读取当前代码目录的状态，并可手动提交一次运行；没�
 `storage` 提供跨运行的通用下载目录，音乐、小说等爬虫共用，不按站点建表：
 
 - `download_sources`：条目/合集级元数据，唯一键 `(spider_code, source, media_type, identifier)`。
-- `download_items`：每个可下载文件一行，保存 `download_url`、`status`、`attempts`、`target_path`、本地哈希等；`(source_id, logical_key)` 唯一，`download_url` 全局唯一。
+- `download_items`：每个可下载文件一行，保存 `download_url`、`status`、`attempts`、`target_path`、本地哈希等；`(source_id, logical_key)` 唯一，`download_url` 全局唯一。失败项不会因尝试次数被永久放弃：`status='failed'` 的行在后续运行中仍会进入下载队列，`attempts` 只作统计。
 - `music_tracks` / `novel_files`：类型明细，和 `download_items.id` 一对一。
 - `music_downloads` / `novel_downloads`：按类型拼好的视图，查询时像单表一样使用。
 

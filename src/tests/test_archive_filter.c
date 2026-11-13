@@ -13,6 +13,40 @@ static json_object *parse(const char *raw)
     return o;
 }
 
+static bool valid_utf8(const char *text)
+{
+    const unsigned char *p = (const unsigned char *)text;
+    while (*p) {
+        size_t length;
+        uint32_t cp;
+        if (*p < 0x80) {
+            p++;
+            continue;
+        } else if (*p >= 0xC2 && *p <= 0xDF) {
+            length = 2;
+            cp = *p & 0x1F;
+        } else if (*p >= 0xE0 && *p <= 0xEF) {
+            length = 3;
+            cp = *p & 0x0F;
+        } else if (*p >= 0xF0 && *p <= 0xF4) {
+            length = 4;
+            cp = *p & 0x07;
+        } else {
+            return false;
+        }
+        for (size_t i = 1; i < length; i++) {
+            if ((p[i] & 0xC0) != 0x80)
+                return false;
+            cp = (cp << 6) | (p[i] & 0x3F);
+        }
+        if ((length == 3 && cp < 0x800) || (length == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+            (cp >= 0xD800 && cp <= 0xDFFF))
+            return false;
+        p += length;
+    }
+    return true;
+}
+
 static json_object *config(void)
 {
     return parse("{\"artist_whitelist\":[],\"artist_whitelist_strict\":false,"
@@ -99,6 +133,21 @@ static void test_artist_title(void)
                          sizeof(title));
     assert(!strcmp(artist, "Artist"));
     assert(!strcmp(title, "Title"));
+}
+
+static void test_artist_truncation_keeps_utf8(void)
+{
+    char creator[601];
+    size_t used = 0;
+    while (used + 2 < sizeof(creator)) {
+        memcpy(creator + used, "é", 2);
+        used += 2;
+    }
+    creator[used] = 0;
+    char artist[256], title[512];
+    archive_artist_title("song.mp3", NULL, NULL, creator, artist, sizeof(artist), title,
+                         sizeof(title));
+    assert(valid_utf8(artist));
 }
 
 static void test_select_files(void)
@@ -260,6 +309,7 @@ int main(void)
     test_cjk();
     test_audio_and_length();
     test_artist_title();
+    test_artist_truncation_keeps_utf8();
     test_select_files();
     test_judge_chinese_and_thai();
     test_judge_whitelist();
