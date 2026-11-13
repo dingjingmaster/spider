@@ -10,6 +10,17 @@ Group=spider
 StateDirectory=spider
 WorkingDirectory=/var/lib/spider
 ExecStart=/opt/spider/bin/spider --host 127.0.0.1 --port 8080 --data-dir /var/lib/spider --ui-dir /opt/spider/share/spider/ui
+# 本机代理（如 karing）。服务单元不继承用户 shell 的环境变量，
+# 不设置时爬虫直连 archive.org 会被 DNS 污染/连接超时。
+# libcurl 忽略大写 HTTP_PROXY，因此大小写都设置。
+Environment=HTTP_PROXY=http://127.0.0.1:3066
+Environment=HTTPS_PROXY=http://127.0.0.1:3066
+Environment=ALL_PROXY=http://127.0.0.1:3066
+Environment=http_proxy=http://127.0.0.1:3066
+Environment=https_proxy=http://127.0.0.1:3066
+Environment=all_proxy=http://127.0.0.1:3066
+Environment=NO_PROXY=127.0.0.1,localhost,::1
+Environment=no_proxy=127.0.0.1,localhost,::1
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
